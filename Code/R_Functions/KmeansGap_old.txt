@@ -1,0 +1,47 @@
+
+DDGap=function(dtf,DDGap=0,plot=0){
+	if(!'gap'%in%names(dtf)) stop('Valid input to GapStat must be a KmeansGap data frame')
+	dtf=subset(dtf,is.finite(gap) & !is.na(gap))
+	gap=dtf$data['gap']; sdgap=dtf$data['sdgap']
+	if(length(gap)>2){ 
+		library(Hmisc); 
+		dgap=diff(c(NA,gap)); ddgap=c(-diff(dgap),NA); sddgap=sqrt(2*sdgap^2+Hmisc::Lag(sdgap,1)^2+Hmisc::Lag(sdgap,-1)^2)
+	}else ddgap=sddgap=-Inf
+	if(plot){
+		if(DDGap & length(ddgap)>1){ 
+			tmp=!is.na(ddgap); k=dtf$khat[tmp]; ddgap=ddgap[tmp]; sddgap=sddgap[tmp]
+			plot(0,t='n',xlim=c(min(k),max(k)),ylim=c(min(ddgap-sddgap),max(ddgap+sddgap)),las=1,xlab='No. clusters',ylab='Gap Statistic')
+			polygon(x=c(k,rev(k)),y=c(ddgap-sddgap,rev(ddgap+sddgap)),col=rgb(0,.3,.5,.3),border=NA)
+			lines(k,ddgap,lwd=2)
+		}else{
+			with(dtf$data,plot(0,t='n',xlim=c(min(khat),max(khat)),ylim=c(min(gap-sdgap),max(gap+sdgap)),las=1,xlab='No. clusters',ylab='Gap Statistic'))
+			with(dtf$data,polygon(x=c(k,rev(k)),y=c(gap-sdgap,rev(gap+sdgap)),col=rgb(0,.3,.5,.3),border=NA))
+			with(dtf$data,lines(k,gap,lwd=2))
+		}
+	}
+	return(list(khat.maxgap=dtf$khat[which.max(gap)],khat.maxddgap=dtf$khat[which.max(ddgap)],maxgap=dtf$maxgap,maxddgap=max(ddgap,na.rm=TRUE)))
+}
+
+JOD=function(dat,khat=NULL,numnulls=100,plot=0){
+	if(!all(c('trait','N')%in%names(dat))) stop('Input must be data frame with trait and N columns')
+	library(cluster); library(plyr); library(pvrank)
+	dat=subset(dat,N>0)
+	vec=rep(dat$trait,round(dat$N/min(dat$N)))
+	if(is.null(khat)) khat=KmeansGap(dat,numnulls=numnulls)$khat
+	cl=clara(vec,k=khat,samples=50); medoids=cl$medoids
+	kmean=kmeans(vec,centers=khat)
+	f=unique(data.frame(trait=vec,cluster=cl$clustering))
+	g=merge(subset(dat,select=c(trait,N)),f)
+	if(plot){
+		with(g,plot(trait,N,t='h',las=1,col=cluster,ylab='Abundance',xlab='Trait'))
+		with(subset(g,trait%in%medoids),points(trait,N,pch=20))
+	}
+	dtf=ddply(g,.(cluster),function(v){ with(v,{
+		medoid=trait[which(trait%in%medoids)][1]
+		d=abs(trait-medoid)
+		spearman=cor(rank(d),rank(N))
+		kendall=comprank(d,N,indr='kendall')$r
+		return(c(spearman,kendall))
+	})}); names(dtf)[-1]=c('spearman','kendall')
+	return(with(dtf,list(spearman=mean(spearman),kendall=mean(kendall))))
+}
