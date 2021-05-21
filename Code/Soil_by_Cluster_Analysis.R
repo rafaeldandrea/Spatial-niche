@@ -2,6 +2,7 @@ library(tidyverse)
 library(readxl)
 library(magrittr)
 library(fgpt)
+library(pcaMethods)
 
 theme_set(theme_bw())
 theme_update(
@@ -50,6 +51,39 @@ unified =
       mutate(mark = nutrient) %>%
       select(x, y, mark, value = standardized)
   ) 
+
+dtf_wide = 
+  unified %>%
+  pivot_wider(names_from = mark, values_from = value) %>%
+  group_by(x, y) %>% 
+  mutate(soiltype = which.max(c(`1`, `2`, `3`))) %>% 
+  ungroup %>%
+  mutate(soiltype = factor(soiltype, levels = c(1, 2, 3)))
+
+pca_model = 
+  dtf_wide %>%
+  select(6:18) %>%
+  pca(method = 'ppca', scale = 'none', center = FALSE)
+
+dtf_wide %<>%
+  bind_cols(
+    pc1 = pca_model@scores[, 1],
+    pc2 = pca_model@scores[, 2]
+  )
+
+plot_pca_colored_by_soiltype = 
+  dtf_wide %>% 
+  ggplot(aes(pc1, pc2, color = soiltype)) + 
+  geom_point() +
+  theme(legend.position = c(.9, .1))
+
+plot_pca_colored_by_nutrient = 
+  dtf_wide %>% 
+  pivot_longer(6:18, names_to = 'nutrient') %>%
+  ggplot(aes(pc1, pc2, color = value)) +
+  geom_point() +
+  facet_wrap(~nutrient) +
+  scale_color_continuous(low = 'grey95', high = 'black')
 
 plot_rasters = 
   unified %>%
