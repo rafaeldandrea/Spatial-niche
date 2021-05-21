@@ -1,14 +1,41 @@
 ## Trait and Soil by Cluster Machine Learning
 
+## Determine whether working on SeaWulf (SBU hpc) or personal computer
+seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
+
+## Read array argument from command line
+index = as.numeric(commandArgs(TRUE))[1]
+if(is.na(index)) index = 1
+
+## operation specifiers
 trait_based_analysis = 0
 soil_based_analysis = 1
-do.naive.bayes = 1
+do.naive.bayes = 0
+do.replicates = 0 ## repeatedly perform the C5.0 classifier on the raw trait data
+do.pca = 1 ## perform the C5.0 classifier on pca data
 
 
-packages = c('e1071', 'tidyverse', 'readxl', 'magrittr', 'gmodels', 'caret', 'irr', 'C50')
+## libraries
+packages = 
+  c(
+    'e1071', 
+    'tidyverse', 
+    'readxl', 
+    'magrittr', 
+    'gmodels', 
+    'caret', 
+    'irr', 
+    'C50', 
+    'fgpt', 
+    'pcaMethods',
+    'future.apply'
+  )
 install.packages(setdiff(packages, rownames(installed.packages())))  
-sapply(packages, library, character.only = TRUE, quietly = TRUE)
+sapply(packages, library, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
 
+plan(multisession)
+
+## plotting theme
 theme_set(theme_bw())
 theme_update(
   panel.grid = element_blank(),
@@ -16,14 +43,28 @@ theme_update(
   aspect.ratio = 1
 )
 
-if(!exists('communities')) source('~/SpatialNiche/R Scripts/DistanceBasedAnalysisByCensus.R')
+## parameters
+parms = expand_grid(scale = c(0, 30, 50, 100, 200, 500, 10000), run = 1:100)
+scenario = parms[index, ]
 
-groups = 
-  tibble(
-    sp = communities %>% membership %>% names,
-    group = communities %>% membership %>% unclass %>% as.factor
-  )
+if(!seawulf){
+  
+  if(!file.exists('~/SpatialNiche/Data/species_by_soiltype.rdata')){
+    
+    source('~/SpatialNiche/R Scripts/DistanceBasedAnalysisByCensus.R')
+    
+    groups = 
+      tibble(
+        sp = communities %>% membership %>% names,
+        group = communities %>% membership %>% unclass %>% as.factor
+      )
+    
+    save(groups, file = '~/SpatialNiche/Data/species_by_soiltype.rdata')
+  }  
+    
+}
 
+groups = get(load('~/SpatialNiche/Data/species_by_soiltype.rdata'))
 
 ## Soil-based analysis
 
@@ -74,6 +115,17 @@ if(soil_based_analysis){
     mutate(soiltype = which.max(c(`1`, `2`, `3`))) %>% 
     ungroup %>%
     mutate(soiltype = factor(soiltype, levels = c(1, 2, 3)))
+  
+  pca_model = 
+    dtf_wide %>%
+    select(6:18) %>%
+    pca(method = 'ppca', scale = 'none', center = FALSE)
+  
+  dtf_wide %<>%
+    bind_cols(
+      pc1 = pca_model@scores[, 1],
+      pc2 = pca_model@scores[, 2]
+    )
   
   if(do.naive.bayes){
     percentage_train = .8
@@ -155,8 +207,147 @@ if(soil_based_analysis){
       show
   }
   
-  C5_model = train(soiltype ~ ., data = dtf_wide[, 6:19], method = 'C5.0')
-  C5_predict = predict(C5_model, dtf_wide$soiltype)
+  soil_dtf = 
+    dtf_wide %>%
+    select(6:19)
+  
+  ## simple test - shorter runtime
+  if(FALSE){
+    C5_model = train(soiltype ~ ., data = soil_dtf, method = 'C5.0')
+    C5_predict = predict(C5_model, soil_dtf)
+  }
+  
+  ## compare C5 on nutrients vs coordinates
+  if(FALSE){
+    C5_model_soil =
+      train(
+        soiltype ~ .,
+        data = soil_dtf,
+        method = 'C5.0',
+        na.action = na.pass,
+        trControl = trainControl(method = 'repeatedcv', repeats = 10),
+        metric = 'Kappa'
+     )
+
+    C5_model_coords =
+      train(
+        soiltype ~ .,
+        data = dtf_wide %>% select(x, y, soiltype),
+        method = 'C5.0',
+        na.action = na.pass,
+        trControl = trainControl(method = 'repeatedcv', repeats = 10),
+        metric = 'Kappa'
+      )
+  }
+  
+  
+  nutrient_null_c5 = function(scale = 100, run){
+    set.seed(run)
+    
+    if(scale > 0){
+      data =
+        apply(dtf_wide[, 6:18], 2, function(vector)
+          unlist(fgperm(xy = cbind(dtf_wide$x, dtf_wide$y), z = vector, scale = scale, iter = 1))) %>%
+        as_tibble %>%
+        mutate(soiltype = dtf_wide$soiltype)
+    } else{
+      data = dtf_wide[6:19]
+    }
+
+    C5_model_null =
+      train(
+        soiltype ~ .,
+        data = data,
+        method = 'C5.0',
+        na.action = na.pass,
+        trControl = trainControl(method = 'repeatedcv', repeats = 10),
+        metric = 'Kappa'
+      )
+    
+    return(C5_model_null)
+    
+  }
+  
+  # future_sapply(1:10, nutrient_null_c5, future.seed = NULL)
+  
+  if(seawulf) model = nutrient_null_c5(scenario$scale, scenario$run)
+  
+  if(seawulf){
+    path = paste0('~/SpatialNiche/Data/C50_nutrients/nutrient_null_scale_', scenario$scale, '_run_', scenario$run, '.rdata')
+    data = list(scenario = scenario, model = model)
+    save(data, file = path)
+  }
+  
+  collate = FALSE
+  if(collate){
+    
+    if(seawulf){
+      library(tidyverse)
+      
+      parms = expand_grid(scale = c(0, 30, 50, 100, 200, 500, 10000), run = 1:100)
+      
+      filenames = 
+        intersect(
+          parms %>%
+            mutate(filename = paste0('nutrient_null_scale_', scale, '_run_', run,'.rdata')) %>%
+            pull(filename),
+          list.files()
+        )
+      
+      res = NULL
+      for(name in filenames){
+        foo = try(get(load(name)), silent = TRUE)
+        if(class(foo) != 'try-error' & 'scenario' %in% names(foo)){
+          bar = bind_cols(foo$scenario, Kappa = foo$model$results %>% slice_max(Kappa) %>% pull(Kappa))
+          res = rbind(res, bar)
+        }
+      }
+      
+      save(res, file = '~/SpatialNiche/Data/partial_data.rdata')
+      
+    }
+    
+    if(!seawulf){
+      dat = get(load('~/SpatialNiche/Data/partial_data.rdata'))
+      
+      dat %>% 
+        # mutate(scale = factor(scale)) %>% 
+        ggplot(aes(x = scale, y = Kappa, group = scale, fill = scale)) + 
+        geom_boxplot() + 
+        theme(legend.position = 'none') + xlab('scale (meters)') + 
+        ggtitle('C5.0 classifier - Cohen\'s Kappa')
+    }
+    
+  }
+  
+  ## plot null data by scales for visual interpretation
+  if(TRUE){
+    scales = parms %>% filter(scale > 0) %>% pull(scale) %>% unique
+    data =
+      sapply(scales, function(scale){
+        unlist(fgperm(xy = base::cbind(dtf_wide$x, dtf_wide$y), z = dtf_wide$N, scale = scale, iter = 1))
+      }) %>%
+      as_tibble %>%
+      bind_cols(dtf_wide %>% select(x, y)) %>%
+      pivot_longer(-c(x, y), names_to = 'scale', values_to = 'N') %>%
+      mutate(scale = scales[match(scale, paste0('V', 1:6))]) %>%
+      bind_rows(
+        dtf_wide %>%
+          select(x, y, N) %>%
+          mutate(scale = 0)
+      )
+
+    plot = 
+      data %>%
+      ggplot(aes(x, y, fill = N)) +
+      geom_raster() +
+      theme(aspect.ratio = .5) +
+      scale_fill_continuous(low = 'grey95', high = 'black') +
+      facet_wrap(~scale)
+    
+    plot %>% show
+  }
+  
   
 }
 
@@ -165,14 +356,6 @@ if(soil_based_analysis){
 ## Trait-based analysis
 
 if(trait_based_analysis){
-  trait_data = read_excel('~/BCI/BCITRAITS_20101220.xlsx')
-  
-  groups = 
-    tibble(
-      sp = communities %>% membership %>% names,
-      group = communities %>% membership %>% unclass %>% as.factor
-    )
-  
   trait_data = read_excel('~/BCI/BCITRAITS_20101220.xlsx')
   
   size_traits = 
@@ -259,7 +442,8 @@ if(trait_based_analysis){
     ) %>%
     ungroup
   
-  dat %<>%
+  trait_dtf =
+    dat %>%
     left_join(normality) %>%
     mutate(standardized = ifelse(normal, value, logged_value)) %>%
     group_by(trait) %>%
@@ -269,8 +453,206 @@ if(trait_based_analysis){
     rename(grwfrm1 = `GRWFRM1$`, grwfrm2 = `GRWFRM2$`) %>%
     mutate(grwfrm1 = as.factor(grwfrm1), grwfrm2 = as.factor(grwfrm2)) %>%
     select(sp, group, everything()) %>%
-    pivot_wider(names_from = trait, values_from = standardized)
+    filter(trait %in% unlist(traitlist))%>%
+    pivot_wider(names_from = trait, values_from = standardized) %>%
+    select(-c(sp, grwfrm2))
   
-  C5_model = train(group ~ ., data = dat %>% select(-sp, grwfrm2, WSG_CHAVE), method = 'C5.0')
-  C5_predict = predict(C5_model, dtf_wide$soiltype)
+  
+  if(do.replicates){
+    ## Implement 100 iterations of the C5.0 classifier, 
+    ## extract Cohen's Kappa from each
+    Kappa = 
+      sapply(1:100, function(index){
+        
+        set.seed(index)
+        
+        model = 
+          train(
+            group ~ ., 
+            data = trait_dtf, 
+            method = 'C5.0', 
+            na.action = na.pass, 
+            trControl = 
+              trainControl(
+                method = 'repeatedcv', 
+                repeats = 10,
+                selectionFunction = 'oneSE'
+              ),
+            metric = 'Kappa'
+          )
+        
+        kappa = 
+          model$results %>%
+          slice_max(Kappa) %>%
+          pull(Kappa)
+        
+        writeLines(paste('run', nullrun, ' Kappa = ', kappa))
+        
+        return(kappa)
+      })
+    
+    
+    ## Calculate a null set of Kappa's from randomized versions of the data
+    ## where the group class is shuffled.
+    nullKappa = sapply(1:100, function(nullrun){
+      
+      set.seed(nullrun)
+      
+      null_dtf = 
+        trait_dtf %>%
+        mutate(group = sample(group))
+      
+      model = 
+        train(
+          group ~ ., 
+          data = null_dtf, 
+          method = 'C5.0', 
+          na.action = na.pass, 
+          trControl = 
+            trainControl(
+              method = 'repeatedcv', 
+              repeats = 10,
+              selectionFunction = 'oneSE'
+            ),
+          metric = 'Kappa'
+        )
+      
+      nullk = 
+        model$results %>%
+        slice_max(Kappa) %>%
+        pull(Kappa)
+      
+      writeLines(paste('run', nullrun, ' Kappa = ', nullk))
+      
+      return(nullk)
+    })
+    
+    kappa_tbl = 
+      tibble(
+        observed = Kappa,
+        null = nullKappa
+      ) %>%
+      rowid_to_column() %>%
+      pivot_longer(-rowid, names_to = 'type', values_to = 'kappa')
+    
+    save(kappa_tbl, file = '~/SpatialNiche/Data/c50_cohens_kappa.rdata')
+    
+    plot_kappa = 
+      kappa_tbl %>%
+      ggplot(aes(x = type, y = kappa, fill = type)) +
+      geom_boxplot() +
+      theme(
+        axis.title.x = element_blank(),
+        legend.position = 'none'
+      ) +
+      ggtitle('Cohen\'s kappa')
+    
+    
+    plot_kappa %>% show
+    
+  }
+  
+  
+  if(do.pca){
+    pca_tibble = get(load('~/SpatialNiche/Data/trait_pca_tibble.rdata'))
+    
+    dtf = 
+      pca_tibble %>%
+      select(-pc2) %>%
+      pivot_wider(names_from = trait, values_from = pc1) %>%
+      select(-sp)
+    
+    if(do.replicates){
+      kappa = sapply(1:100, function(index){
+        
+        set.seed(index)
+        
+        model = 
+          train(
+            group ~ ., 
+            data = dtf, 
+            method = 'C5.0', 
+            na.action = na.pass, 
+            trControl = 
+              trainControl(
+                method = 'repeatedcv', 
+                repeats = 10,
+                selectionFunction = 'oneSE'
+              ),
+            metric = 'Kappa'
+          )
+        
+        k = 
+          model$results %>%
+          slice_max(Kappa) %>%
+          pull(Kappa)
+        
+        writeLines(paste('run = ', index, ' Kappa = ', k))
+        
+        return(k)
+        
+      })
+      
+      nullkappa = sapply(1:100, function(index){
+        
+        set.seed(index)
+        
+        null_dtf = 
+          dtf %>%
+          mutate(group = sample(group))
+        
+        model = 
+          train(
+            group ~ ., 
+            data = null_dtf, 
+            method = 'C5.0', 
+            na.action = na.pass, 
+            trControl = 
+              trainControl(
+                method = 'repeatedcv', 
+                repeats = 10,
+                selectionFunction = 'oneSE'
+              ),
+            metric = 'Kappa'
+          )
+        
+        k = 
+          model$results %>%
+          slice_max(Kappa) %>%
+          pull(Kappa) %>%
+          unique
+        
+        writeLines(paste('run = ', index, ' Kappa = ', k))
+        
+        return(k)
+        
+      })
+      
+      kappa_tbl_pca = 
+        tibble(
+          observed = kappa,
+          null = nullkappa
+        ) %>%
+        rowid_to_column() %>%
+        pivot_longer(-rowid, names_to = 'type', values_to = 'kappa')
+      
+      save(kappa_tbl_pca, file = '~/SpatialNiche/Data/c50_cohens_kappa_pca.rdata')
+      
+      plot_kappa_pca = 
+        kappa_tbl_pca %>%
+        ggplot(aes(x = type, y = kappa, fill = type)) +
+        geom_boxplot() +
+        theme(
+          axis.title.x = element_blank(),
+          legend.position = 'none'
+        ) +
+        ggtitle('Cohen\'s kappa')
+      
+      
+      plot_kappa_pca %>% show
+      
+    }
+    
+  }
+  
 }
