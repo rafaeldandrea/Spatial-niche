@@ -4,34 +4,34 @@ library(caret) ## for function confusionMatrix()
 library(ggplotify) ## to convert from base plot to grob
 library(igraph) ## to convert the adjacency matrix constructed from the pairs connected into 
                 ## a graph then find communities in the graph
+library(gtools)  ## for function mixedsort
 library(tidyverse)
+library(furrr)  ## for parallel computing
+library(parallel)  
+
+plan(multisession, workers = detectCores() - 1)
+load('~/R_Functions/colors.rdata')
 
 
 run.analysis = 0
 wrangle.results = 0
 wrangle.confusion = 0
-do.bci = 1
+do.fdp = 1
 do.network.validation = 0
 
-## ========== Load functions =========
-loadfuns <- {
-  lapply(
-    list.files(
-      path = "~/R_Functions",
-      pattern = "[.][R]$",
-      full.names = TRUE,
-      ignore.case = TRUE,
-      recursive = TRUE
-    ),
-    source
-  )
-}
+fdp = 'bci'
+
+
+
+
 
 ## ================ Reader parameters ==============
-## Indicator variable; 1 if running on High Power Computing cluster, 0 if running on my PC.
-hpcc <- !(user <- Sys.info()['user']) %in% c('rafael', 'rdand')
+## Indicator variable; 1 if running on High Power Computing cluster, 
+## 0 if running on my PC.
+hpcc = !(user <- Sys.info()['user']) %in% c('rafael', 'rdand')
 
-## pdf of the distance d between two random points in a square of side a, from Johan Philip 2007
+## pdf of the distance d between two random points in a 
+## square of side a, from Johan Philip 2007
 euclidean2d_distance_probability <- function(d, a){
   if(d > a * sqrt(2)) return(0)
   f =
@@ -47,7 +47,8 @@ euclidean2d_distance_probability <- function(d, a){
   return(2 * d * f)
 } 
 
-## pdf of the distance d between two random points in a square of sides a and b > a, from Johan Philip 2007
+## pdf of the distance d between two random points in a 
+## rectangle of sides a and b > a, from Johan Philip 2007
 euclidean2d_distance_probability_ab <- function(d, a, b){
   if(a == b) return(euclidean2d_distance_probability(d, a))
   s = d ^ 2
@@ -104,7 +105,7 @@ if(FALSE){
   x = seq(0, sqrt(2), l = 1000)
   p = sapply(x, function(d) euclidean2d_distance_probability(d, 1))
   F = cumsum(c(0, diff(x)) * p)
-  lines(x, F, col = red)  
+  lines(x, F, col = colors$red)  
 }
 
 distances = 0:ceiling(sqrt(2) * 144)/144
@@ -115,7 +116,9 @@ cumulative_null_prob = cumsum(pdexp * c(0, diff(distances)))
 setwd('~/SpatialNiche/Data/20200709-80scen-A20kS220-H-betanoise-biotime2e5/')
 datafiles = paste0('scenario_', 1:80,'.RData')
 
-scenario = make_index(19)
+## Read array argument from command line
+scenario = as.numeric(commandArgs(TRUE))[1]
+if(is.na(scenario)) scenario = 19
 
 datafile = datafiles[scenario]
 dat = get(load(datafile))
@@ -500,21 +503,28 @@ if(wrangle.confusion){
   )
 }
 
-if(do.bci){
+if(do.fdp){
   
-  distance_threshold = 10 ## in meters
-  abundance_threshold = 200
+  distance_threshold = 10 ## d* in meters
+  distance_step = 1e-5 ## dr
+  distances_fdp = seq(0, distance_threshold, by = distance_step) 
   
-  distances_bci = seq(0, distance_threshold, by = 1e-5)
+  Ly = 500
+  if(fdp == 'bci') Lx = 1000
+  if(fdp == 'lap') Lx = 500
   
-  pdexp_bci = 
+  # p(r)
+  pdexp_fdp = 
     sapply(
-      distances_bci, function(d) 
-        euclidean2d_distance_probability_ab(d, a = 500, b = 1000)
+      distances_fdp, function(d) 
+        euclidean2d_distance_probability_ab(d, a = Ly, b = Lx)
     )
   
-  cumulative_null_prob_threshold = sum(pdexp_bci) * 1e-5
+  ## int p(r) * dr from 0 to d*
+  cumulative_null_prob_threshold = sum(pdexp_fdp * distance_step) 
   
+  ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
+  ## within a circle of radius d*
   abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
   
   
@@ -551,13 +561,16 @@ if(do.bci){
     
   }
   
-  seed = make_index(1)
-  set.seed(seed)
+  set.seed(scenario)
   
-  # bci = 
-  #   get(load('~/SpatialNiche/Data/BCI/bci_coords_allcensuses.RData')) %>%
-  #   select(sp, gx, gy) %>%
-  #   unique
+  lap = 
+    read.table(
+      '~/SpatialNiche/Data/relaplanadacensusdata/Censo 2_La Planada.txt', 
+      header = TRUE
+    ) %>%
+    as_tibble %>%
+    filter(dbh >= 100) %>%
+    select(sp, gx, gy)
   
   bci = 
     get(
@@ -572,83 +585,88 @@ if(do.bci){
     unique() %>%
     as_tibble
   
-  abuns = 
-    bci %>%
-    group_by(sp) %>%
-    count %>%
-    arrange(desc(n)) %>%
-    ungroup
+  if(fdp == 'bci') dat = bci 
+  if(fdp == 'lap') dat = lap
   
-  bci_filtered = 
-    bci %>%
+  abuns = 
+    dat %>%
+    count(sp) %>%
+    arrange(desc(n))
+  
+  dat_filtered = 
+    dat %>%
     inner_join(abuns, by = 'sp') %>%
     filter(n >= abundance_threshold)
     
-  selected_species = sort(unique(as.character(bci_filtered$sp)))
-  
+  ## selects species that are more correlated with *themselves* than
+  ## a hypothetical random pair of species with equal abundance
   selected_species =
-    {
-      bci_filtered %>%
-        ddply(
-          .(sp),
-          function(df){
-            d = dist(cbind(df$gx, df$gy))
-            nn12_positive = d[d > 0]
-            connected =
-              mean(nn12_positive <= distance_threshold) -
-              cumulative_null_prob_threshold
-          }
-        ) %>%
-        filter(V1 > 0) %>%
-        mutate(sp = as.character(sp)) %>%
-        pull(sp)
-    }
-
-  sp_dtf =
-    {
-      tidyr::crossing(
-        sp1 = selected_species,
-        sp2 = selected_species
-      ) %>%
-        filter(sp2 >= sp1) %>%
-        ddply(
-          .(sp1, sp2), 
-          function(df){
-            sp1 = df$sp1
-            sp2 = df$sp2
-            
-            # if(!hpcc) writeLines(paste(sp1, sp2))
-            
-            df1 = 
-              bci_filtered %>%
-              filter(sp == sp1)
-            
-            df2 = 
-              bci_filtered %>%
-              filter(sp == sp2)
-            
-              nn12 = 
-                dist.matrix(
-                  df1 %>% 
-                    select(gx, gy) %>%
-                    as.matrix,
-                  df2 %>% 
-                    select(gx, gy) %>%
-                    as.matrix,
-                  method = 'euclidean'
-                ) %>%
-                as.numeric
-              
-              nn12_positive = nn12[nn12 > 0]
-              connected = 
-                mean(nn12_positive <= distance_threshold) - 
-                cumulative_null_prob_threshold
-          }
-        ) %>%
-        as_tibble %>%
-        rename(pairs_within_radius = V1)
-      
-    }
+    unique(dat_filtered$sp) %>%
+    map_dfr(
+      .f = function(char){
+        
+        df = 
+          dat_filtered %>%
+          filter(sp == char)
+        
+        d = dist(cbind(df$gx, df$gy))
+        
+        nn12_positive = d[d > 0]
+        
+        connected =
+          mean(nn12_positive <= distance_threshold) -
+          cumulative_null_prob_threshold
+        
+        return(tibble(sp = char, keep = connected > 0))
+      }
+    ) %>%
+    filter(keep == TRUE) %>%
+    pull(sp)
+  
+  xy = 
+    expand_grid(
+      sp1 = selected_species,
+      sp2 = selected_species
+    ) %>%
+    filter(sp2 >= sp1)
+  
+  sp_dtf = 
+    future_map2_dfr(
+      .x = xy$sp1,
+      .y = xy$sp2,
+      .f = function(sp1, sp2){
+        df1 = 
+          dat_filtered %>%
+          filter(sp == sp1)
+        
+        df2 = 
+          dat_filtered %>%
+          filter(sp == sp2)
+        
+        nn12 = 
+          dist.matrix(
+            df1 %>% 
+              select(gx, gy) %>%
+              as.matrix,
+            df2 %>% 
+              select(gx, gy) %>%
+              as.matrix,
+            method = 'euclidean'
+          ) %>%
+          as.numeric
+        
+        nn12_positive = nn12[nn12 > 0]
+        
+        connection = mean(nn12_positive <= distance_threshold)
+        
+        return(tibble(sp1, sp2, connection))
+      }
+    ) %>%
+    mutate(
+      sp1 = factor(sp1), 
+      sp2 = factor(sp2)
+    ) %>%
+    arrange(sp1, sp2)
   
   res = 
     sp_dtf %>%
@@ -664,13 +682,13 @@ if(do.bci){
     pivot_wider(
       id_cols = sp1, 
       names_from = sp2, 
-      values_from = pairs_within_radius,
+      values_from = connection,
       values_fill = NA
     ) %>%
     select(-1) %>% 
     as.matrix 
   
-  threshold_index = 0
+  adjacency_matrix = 1 * (res_matrix > cumulative_null_prob_threshold)
   
   if(FALSE){
     seriated_order = 
@@ -690,12 +708,18 @@ if(do.bci){
     
   }
   
-  adjacency_matrix = 1 * (res_matrix > 0)
-  
   graph = 
     graph_from_adjacency_matrix(
       adjacency_matrix, 
-      mode = 'undirected', 
+      mode = 'undirected',
+      diag = TRUE
+    )
+  
+  graph_weighted = 
+    graph_from_adjacency_matrix(
+      res_matrix, 
+      mode = 'undirected',
+      weighted = TRUE,
       diag = TRUE
     )
   
@@ -706,35 +730,47 @@ if(do.bci){
       diag = FALSE
     )
   
-  communities = cluster_walktrap(graph)
+  # communities = cluster_walktrap(graph)
+  # communities = cluster_spinglass(graph)
+  communities = cluster_louvain(graph)
   
   modularity = modularity(communities)
   membership = membership(communities)
   
-  null_modularity = NULL
-  for(null in 1:1e3){
-    null_adjacency_matrix =
-      randomize_adjacency_matrix(
-        nvertices = nrow(adjacency_matrix),
-        nedges = (sum(adjacency_matrix) - psych::tr(adjacency_matrix)) / 2
-      )
-    
-    null_graph = 
-      graph_from_adjacency_matrix(
-        null_adjacency_matrix, 
-        mode = 'undirected', 
-        diag = TRUE
-      )
-    
-    null_communities = cluster_walktrap(null_graph)
-    
-    null_modularity = c(null_modularity, modularity(null_communities))
-  }
-
+  null_modularity = 
+    future_map_dbl(1:1e3, function(k){
+      
+      null_adjacency_matrix =
+        randomize_adjacency_matrix(
+          nvertices = nrow(adjacency_matrix),
+          nedges = sum(degree(graph))/ 2 - nrow(adjacency_matrix)
+        )
+      
+      null_graph = 
+        graph_from_adjacency_matrix(
+          null_adjacency_matrix, 
+          mode = 'undirected', 
+          diag = TRUE
+        )
+      
+      null_communities = cluster_louvain(null_graph)
+      
+      modularity(null_communities)
+  })
+  
+  plot_null_modularity = 
+    tibble(
+      null = null_modularity, 
+      data = modularity
+    ) %>% 
+    ggplot(aes(null)) + 
+    geom_density(fill = 'grey') + 
+    geom_vline(aes(xintercept = data), color = colors$red, size = 2)
+  
   adjacency_vs_communities_tibble =
     res %>%
     mutate(
-      connected = 1 * (pairs_within_radius > 0)
+      connected = 1 * (connection > cumulative_null_prob_threshold)
     ) %>%
     left_join(
       tibble(
@@ -795,6 +831,10 @@ if(do.bci){
   
   #### Plots #####
   if(!hpcc){
+    
+    theme_set(theme_bw())
+    theme_update(panel.grid = element_blank())
+    
     plot_all_data =
       bci %>% 
       filter(sp %in% abuns$sp[1:20]) %>%
@@ -806,7 +846,7 @@ if(do.bci){
       plot_seriation_binary = 
         res_seriated %>%
         mutate(
-          connected = ifelse(sp1 != sp2, 1, -1) * (pairs_within_radius > 0)
+          connected = ifelse(sp1 != sp2, 1, -1) * (connection > 0)
         ) %>%
         mutate(connected = factor(connected)) %>%
         ggplot(aes(sp1, sp2, fill = connected)) +
@@ -819,7 +859,7 @@ if(do.bci){
       
       plot_seriation = 
         res_seriated %>%
-        mutate(qtl = findInterval(pairs_within_radius, quantile(pairs_within_radius, 0:4/4))) %>%
+        mutate(qtl = findInterval(connection, quantile(connection, 0:4/4))) %>%
         ggplot(aes(sp1, sp2, fill = qtl)) +
         geom_raster() +
         theme(aspect.ratio = 1)
@@ -831,7 +871,7 @@ if(do.bci){
         theme(aspect.ratio = 1) +
         theme(axis.text.x=element_blank()) +
         theme(legend.position = 'none') +
-        scale_fill_manual(values = c('white', red, green, blue))
+        scale_fill_manual(values = c('white', colors$red, colors$green, colors$blue))
       
     }
     
@@ -840,7 +880,7 @@ if(do.bci){
         ~plot(
           communities, 
           graph_no_self_loops, 
-          col = c(red, green, blue)[communities$membership]
+          col = with(colors, c(red, green, blue, yellow))[communities$membership]
         ) 
       ) +
       theme(aspect.ratio = 1) +
@@ -860,7 +900,7 @@ if(do.bci){
             vjust = 0.2,
             face = 'bold',
             color = 
-              c(red, green, blue)[
+              with(colors, c(red, green, blue, yellow))[
                 adjacency_vs_communities_for_plotting %>% 
                   select(sp2, sp2_community) %>% 
                   unique() %>%
@@ -873,7 +913,7 @@ if(do.bci){
           element_text(
             face = 'bold',
             color = 
-              c(red, green, blue)[
+              with(colors, c(red, green, blue, yellow))[
                 adjacency_vs_communities_for_plotting %>% 
                 select(sp2, sp2_community) %>% 
                 unique() %>%
@@ -882,30 +922,30 @@ if(do.bci){
           )
       )
     
-    plot_bci = 
-      bci %>%
+    plot_fdp = 
+      dat %>%
       mutate(sp = as.character(sp)) %>%
       inner_join(membership_tibble, by = 'sp') %>%
       ggplot(aes(gx, gy, color = community, group = community)) +
       geom_point() +
       labs(color = 'cluster') +
-      theme(aspect.ratio = .5) +
-      scale_color_manual(values = c(red, green, blue))
+      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) +
+      scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
     
-    plot_bci_null = 
-      bci %>%
+    plot_fdp_null = 
+      dat %>%
       mutate(sp = as.character(sp)) %>%
       inner_join(membership_tibble, by = 'sp') %>%
       ggplot(aes(gx, gy, color = nullcommunity, group = nullcommunity)) +
       geom_point() +
       labs(color = 'cluster') +
-      theme(aspect.ratio = .5) +
-      scale_color_manual(values = c(red, green, blue))
+      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) +
+      scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
     
     gridExtra::grid.arrange(
       plot_adjacency_vs_communities,
       plot_communities,
-      plot_bci,
+      plot_fdp,
       layout_matrix = rbind(c(1, 2), c(3, 3)),
       top = 
         paste(
@@ -916,13 +956,14 @@ if(do.bci){
           '       No. species = ',
           length(selected_species),
           '       prop. trees > 10 cm dbh analyzed = ',
-          round(nrow(bci_filtered) / nrow(bci), 2),
+          round(nrow(dat_filtered) / nrow(bci), 2),
           '       modularity = ',
           round(modularity, 2),
           '       cor[adjacent, same community] = ',
           round(with(adjacency_vs_communities_tibble, cor(connected, same_community)), 2)
         )
     )
+    
     
     print(paste('modularity = ', round(modularity, 2)))
     
@@ -947,6 +988,85 @@ if(do.bci){
     
     
   }
+  
+  ## Kernel density estimation
+  
+  evalpoints = 
+    expand_grid(
+      x = (1:50  - .5) * 20,
+      y = (1:25 - .5) * 20
+    )
+  
+  df = 
+    dat |> 
+    inner_join(
+      membership |> 
+        enframe() |> 
+        rename(sp = name, soiltype = value) |> 
+        mutate(soiltype = as.factor(soiltype)), 
+      by = 'sp')
+  
+  results =
+    membership %>% 
+    unique %>% 
+    sort %>%
+    map_dfr(
+      .f = function(group){
+        x = 
+          df |> 
+          filter(soiltype == group) |> 
+          select(gx, gy) |> 
+          kde(
+            eval.points = evalpoints,
+            bgridsize = c(Lx / 20, Ly / 20), 
+            xmin = c(0, 0), 
+            xmax = c(1000, 500)
+          ) 
+        
+        x$estimate %>% 
+          as_tibble %>% 
+          bind_cols(evalpoints) %>%
+          pivot_wider(names_from = y, values_from = value) %>%
+          pivot_longer(-x, names_to = 'y') %>% 
+          mutate(
+            y = str_remove(y, 'V') %>% 
+              as.numeric,
+            value = value / sum(value),
+            soiltype = group
+          ) %>%
+          return
+      }
+    ) %>%
+    group_by(x, y) %>%
+    mutate(
+      soiltype = factor(soiltype, levels = seq_along(membership %>% unique)),
+      prob = value / sum(value)
+    ) %>%
+    ungroup()
+  
+  plot_rasters =
+    results %>% 
+    ggplot(aes(x, y, fill = prob)) + 
+    geom_raster() + 
+    facet_wrap(~soiltype) +
+    theme(aspect.ratio = .5) + 
+    scale_fill_gradientn(colors = terrain.colors(100)) +
+    theme(strip.background = element_rect(fill = 'orange'))
+  
+  plot_majority_vote = 
+    results %>% 
+    group_by(x, y) %>% 
+    slice_max(prob) %>% 
+    ggplot(aes(x, y, fill = soiltype)) + 
+    geom_raster() + 
+    theme(aspect.ratio = .5)
+  
+  gridExtra::grid.arrange(
+    plot_majority_vote,
+    plot_rasters,
+    ncol = 1
+  )
+  
 }
 
 if(do.network.validation){
@@ -1146,7 +1266,7 @@ if(do.network.validation){
       ~plot(
         communities, 
         graph_no_self_loops, 
-        col = c(red, green, blue)[communities$membership]
+        col = c(colors$red, colors$green, colors$blue)[communities$membership]
       ) 
     ) +
     theme(aspect.ratio = 1) +

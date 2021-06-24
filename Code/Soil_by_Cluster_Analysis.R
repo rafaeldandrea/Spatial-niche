@@ -11,7 +11,7 @@ theme_update(
   strip.background = element_rect(fill = 'orange')
 )
 
-do.fgpt = 1
+do.fgpt = 0
 
 dtf = NULL
 for(i in 1:3){
