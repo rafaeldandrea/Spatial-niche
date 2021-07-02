@@ -5,18 +5,22 @@ seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
 
 ## Read array argument from command line
 index = as.numeric(commandArgs(TRUE))[1]
-if(is.na(index)) index = 1
+if(is.na(index)) index = 0
 
 ## operation specifiers
-trait_based_analysis = 0
+trait_based_analysis = 1
 soil_based_analysis = 0
 do.naive.bayes = 0
 do.replicates = seawulf          ## Repeatedly perform the C5.0 classifier on the raw trait data
 do.pca = 0                       ## Perform the C5.0 classifier on pca data
 do.partial.randomization = 0     ## Test C5.0 on partially randomized nutrient features (package fgpt)
-do.randomfield = 0               ## Test C5.0 on random fields with same autocorrelation scale, number, 
+do.randomfield = 0              ## Test C5.0 on random fields with same autocorrelation scale, number, 
                                  ##      and prevalence of soiltypes as our data
-do.matrix.analysis = 1           ## Estimate the affinity matrix
+do.matrix.analysis = 0          ## Estimate the affinity matrix
+
+
+fdp = 'bci'
+date = '20210627'
 
 ## libraries
 packages = 
@@ -84,54 +88,80 @@ if(!seawulf){
 #     )
 #   )
 
-groups = 
-  readRDS(
-    url(
-      'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_groups_cluster_louvain.rds?raw=true'
-    )
-  ) %>%
-  mutate(group = community)
-
-## Soil-based analysis
-
-if(soil_based_analysis){
-  # dtf = NULL
-  # for(i in 1:3){
-  #   dtf = 
-  #     dtf %>%
-  #     bind_rows(
-  #       read.csv(
-  #         paste0(
-  #           'https://raw.githubusercontent.com/rafaeldandrea/Spatial-niche/main/Data/soiltype',i,'_dist_10_abd_50.csv'
-  #         )
-  #       ) %>%
-  #       as_tibble %>%
-  #       mutate(soiltype = i)
-  #     )
-  # }
-  
-  # soiltype = 
-  #   dtf %>%
-  #   pivot_longer(-c(X, soiltype), names_to = 'Y') %>%
-  #   mutate(Y = as.numeric(str_remove(Y, 'X'))) %>%
-  #   mutate(x = (1 + X) * 20 - 10, y = (1 + Y) * 20 - 10) %>%
-  #   select(X, Y, x, y, soiltype, value) %>%
-  #   group_by(soiltype) %>%
-  #   mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
-  #   ungroup
-  
-  soiltype =
+if(fdp == 'bci'){
+  groups = 
     readRDS(
       url(
-        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_20by20grid_soiltype_louvain.rds?raw=true'
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_groups_cluster_louvain.rds?raw=true'
       )
-    )
+    ) %>%
+    mutate(group = community)
   
-  nutrients =
-    rio::import(
-      'https://github.com/rafaeldandrea/Spatial-niche/raw/main/Data/bci.block20.data-original.xls', 
-      which = 2
-    ) %>% 
+}
+
+
+## Soil-based analysis
+if(soil_based_analysis){
+  if(fdp == 'bci'){
+    nutrients = 
+      read_excel(
+        '~/SpatialNiche/Data/bci.block20.data-original.xls', 
+        sheet = 2
+      )
+    
+    if(FALSE){
+      dtf = NULL
+      for(i in 1:3){
+        dtf =
+          dtf %>%
+          bind_rows(
+            read.csv(paste0('~/SpatialNiche/Data/soiltype', i, '_dist_10_abd_50.csv')) %>%
+              as_tibble %>%
+              mutate(soiltype = i)
+          )
+      }
+
+      soiltype =
+        dtf %>%
+        pivot_longer(-c(X, soiltype), names_to = 'Y') %>%
+        mutate(Y = as.numeric(str_remove(Y, 'X'))) %>%
+        mutate(x = (1 + X) * 20 - 10, y = (1 + Y) * 20 - 10) %>%
+        select(X, Y, x, y, soiltype, value) %>%
+        group_by(soiltype) %>%
+        mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+        ungroup
+      
+    }
+    
+    soiltype =
+      readRDS('~/SpatialNiche/Data/bci_20by20grid_soiltype_louvain_dthresh_11.rds') %>%
+      rename(standardized = prob)
+    
+  } 
+  
+  if(fdp == 'lap'){
+    nutrients = 
+      read.csv(
+        '~/SpatialNiche/Data/Soil_data/resoilnutrientdatarequest/lap_20x20_soil.csv'
+      ) %>%
+      as_tibble %>%
+      mutate(
+        x = 10 * (2 * (x - 1) + 1),
+        y = 10 * (2 * (y - 1) + 1)
+      )
+    
+    soiltype = 
+      readRDS('~/SpatialNiche/Data/laplanada_20by20grid_soiltype_louvain.rds') %>%
+      rename(standardized = prob)
+  }
+  
+  majority = 
+    soiltype %>% 
+    group_by(x, y) %>% 
+    slice_max(standardized, n = 1) %>%
+    ungroup
+  
+  nutrients %<>%
     pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
     group_by(nutrient) %>%
     mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
@@ -140,7 +170,7 @@ if(soil_based_analysis){
   unified = 
     soiltype %>%
     mutate(mark = as.factor(soiltype)) %>%
-    select(x, y, mark, value = prob) %>%
+    select(x, y, mark, value = standardized) %>%
     bind_rows(
       nutrients %>%
         mutate(mark = nutrient) %>%
@@ -150,16 +180,13 @@ if(soil_based_analysis){
   dtf_wide = 
     unified %>%
     pivot_wider(names_from = mark, values_from = value) %>%
-    group_by(x, y) %>% 
-    mutate(soiltype = which.max(c(`1`, `2`, `3`))) %>% 
-    ungroup %>%
-    mutate(soiltype = factor(soiltype, levels = c(1, 2, 3)))
+    left_join(majority, by = c('x', 'y'))
   
-  pca_model =
+  pca_model = 
     dtf_wide %>%
-    select(6:18) %>%
+    select(-c(x, y, `1`, `2`, `3`, soiltype, standardized)) %>%
     pca(method = 'ppca', scale = 'none', center = FALSE)
-
+  
   dtf_wide %<>%
     bind_cols(
       pc1 = pca_model@scores[, 1],
@@ -246,14 +273,54 @@ if(soil_based_analysis){
       show
   }
   
-  soil_dtf = 
-    dtf_wide %>%
-    select(6:19)
+  if(fdp == 'bci'){
+    soil_dtf = 
+      dtf_wide %>%
+      select(Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
+  }
   
-  ## simple test - shorter runtime
+  if(fdp == 'lap'){
+    soil_dtf = 
+      dtf_wide %>%
+      select(Al, Ca, Cu, Fe, K, Mg, Mn, P, Nmin, pH, soiltype)
+  }
+  
+  ## C5.0 on groups vs nutrients
   if(FALSE){
-    C5_model = train(soiltype ~ ., data = soil_dtf, method = 'C5.0')
-    C5_predict = predict(C5_model, soil_dtf)
+    
+    C5fit = 
+      function(seed, .data){
+        
+        set.seed(seed)
+        
+        C5_model = 
+          train(
+            soiltype ~ ., 
+            data = .data, 
+            method = 'C5.0',
+            trControl = trainControl(method = 'repeatedcv', repeats = 10),
+            metric = 'Kappa'
+          )
+        
+        df = 
+          C5_model$results %>%
+          slice_max(Kappa, n = 1)
+        
+        tibble(seed, df) %>%
+          return()
+      }
+    
+    result = 
+      1:100 %>%
+      future_map_dfr(
+        .f = C5fit,
+        .options = furrr_options(seed = NULL),
+        .data = soil_dtf
+      )
+    
+    saveRDS(result, file = paste0('~/SpatialNiche/Data/', fdp, '_louvain_C5_nutrients_results.rds'))
+    
+    
   }
   
   ## compare C5.0 on nutrients vs coordinates
@@ -353,6 +420,9 @@ if(soil_based_analysis){
     
     randomfield_test = function(
       seed, 
+      Lx,
+      Ly,
+      date,
       .data, 
       .range95, 
       .sill, 
@@ -363,14 +433,14 @@ if(soil_based_analysis){
       
       test_data = 
         expand_grid(
-          y = seq(10, 490, by = 20),
-          x = seq(10, 990, by = 20)
+          y = seq(10, Ly - 10, by = 20),
+          x = seq(10, Lx - 10, by = 20)
         ) %>%
         mutate(
           field = 
             .func(
-              Lx = 1000 / 20, 
-              Ly = 500 / 20, 
+              Lx = Lx / 20, 
+              Ly = Ly / 20, 
               rangepar = range95, 
               sillpar = sill, 
               nuggetpar = .015, 
@@ -416,7 +486,16 @@ if(soil_based_analysis){
         
         saveRDS(
           res, 
-          file = paste0('~/SpatialNiche/Data/C50_nutrients_RandomField_20210622/randomfield_null_', seed, '.rds')
+          file = 
+            paste0(
+              '~/SpatialNiche/Data/C50_nutrients_RandomField_',
+              date,
+              '/',
+              fdp,
+              '_randomfield_null_', 
+              seed, 
+              '.rds'
+            )
         )
         
         return(res)
@@ -447,6 +526,9 @@ if(soil_based_analysis){
         1:number_of_nulls %>%
         future_map_dfr(
           .f = randomfield_test,
+          Lx = ifelse(fdp == 'bci', 1000, 500),
+          Ly = 500,
+          date = date,
           .data = soil_dtf,
           .sill = sill,
           .range95 = range95,
@@ -455,7 +537,17 @@ if(soil_based_analysis){
           save.result = TRUE
         )
       
-      saveRDS(results, file = '~/SpatialNiche/Data/C50_nutrients_RandomField_20210622/randomfield_collated.rds')
+      saveRDS(
+        results, 
+        file = 
+          paste0(
+            '~/SpatialNiche/Data/C50_nutrients_RandomField_',
+            date,
+            '/', 
+            fdp, 
+            '_randomfield_collated.rds'
+            )
+        )
       
     }
     
@@ -521,8 +613,10 @@ if(soil_based_analysis){
       #       mutate(type = 'null') 
       #   )
       
+      # data = 
+      #   readRDS('~/SpatialNiche/Data/C50_nutrients_RandomField_20210622/randomfield_collated.rds')
       data = 
-        readRDS('~/SpatialNiche/Data/C50_nutrients_RandomField_20210622/randomfield_collated.rds')
+        readRDS('~/SpatialNiche/Data/C50_nutrients_RandomField_20210627/bci_randomfield_collated.rds')
       
       plot_test_data = 
         test_data %>% 
@@ -692,13 +786,53 @@ if(soil_based_analysis){
     
   }
   
+  if(!seawulf){
+    bci_dtf = 
+      readRDS('~/SpatialNiche/Data/C50_nutrients_RandomField_20210622/randomfield_collated.rds')
+    
+    kappa = 
+      bci_dtf %>%
+      filter(is.na(seed)) %>%
+      pull(Kappa)
+    
+    sd_kappa = 
+      bci_dtf %>%
+      filter(is.na(seed)) %>%
+      pull(KappaSD)
+    
+    foo = 
+      tibble(
+        x = kappa + sd_kappa * c(-1, 1, 1, -1),
+        y = c(0, 0, 5, 5)
+      )
+    
+    bci_dtf %>% 
+      drop_na(seed) %>% 
+      ggplot(aes(Kappa)) + 
+      geom_density(fill = 'grey') + 
+      geom_polygon(aes(x, y), data = foo, fill = 'salmon', alpha = .5) + 
+      geom_segment(
+        aes(x = kappa, xend = kappa, y = 0, yend = 5), 
+        color = 'darkred', 
+        size = 1
+      ) + 
+      coord_cartesian(
+        ylim = c(0, 4.5), 
+        xlim = c(0, 1)
+      ) +
+      ggtitle('Cohen\'s kappa') +
+      ylab('density') +
+      scale_x_continuous(breaks = 0:5 / 5)
+    
+  }
   
 }
 
 
 ## Trait-based analysis
 if(trait_based_analysis){
-  data = readRDS('~/SpatialNiche/Data/bci_trait_pca_group_louvain.rds')
+  # data = readRDS('~/SpatialNiche/Data/bci_trait_pca_group_louvain.rds')
+  data = readRDS('~/SpatialNiche/Data/bci_trait_pca_group_louvain_dthresh_11.rds')
   
   dat = 
     data %>% 

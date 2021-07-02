@@ -8,6 +8,7 @@ library(gtools)  ## for function mixedsort
 library(tidyverse)
 library(furrr)  ## for parallel computing
 library(parallel)  
+library(ks)       ## for kernel density estimation function kde() 
 
 plan(multisession, workers = detectCores() - 1)
 load('~/R_Functions/colors.rdata')
@@ -20,10 +21,6 @@ do.fdp = 1
 do.network.validation = 0
 
 fdp = 'bci'
-
-
-
-
 
 ## ================ Reader parameters ==============
 ## Indicator variable; 1 if running on High Power Computing cluster, 
@@ -505,7 +502,7 @@ if(wrangle.confusion){
 
 if(do.fdp){
   
-  distance_threshold = 10 ## d* in meters
+  distance_threshold = 11 ## d* in meters
   distance_step = 1e-5 ## dr
   distances_fdp = seq(0, distance_threshold, by = distance_step) 
   
@@ -526,7 +523,6 @@ if(do.fdp){
   ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
   ## within a circle of radius d*
   abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
-  
   
   if(FALSE){
     bci = NULL
@@ -587,6 +583,7 @@ if(do.fdp){
   
   if(fdp == 'bci') dat = bci 
   if(fdp == 'lap') dat = lap
+  
   
   abuns = 
     dat %>%
@@ -734,8 +731,24 @@ if(do.fdp){
   # communities = cluster_spinglass(graph)
   communities = cluster_louvain(graph)
   
+  if(fdp == 'lap'){
+    groups = 
+      with(
+        communities, 
+           1 * (membership == 3) + 
+           2 * (membership == 2) + 
+           3 * (membership == 1)
+      )
+    
+    communities$membership = groups
+  }
+  
+  membership = 
+    membership(communities) %>%
+    enframe %>%
+    rename(group = value)
+  
   modularity = modularity(communities)
-  membership = membership(communities)
   
   null_modularity = 
     future_map_dbl(1:1e3, function(k){
@@ -765,7 +778,10 @@ if(do.fdp){
     ) %>% 
     ggplot(aes(null)) + 
     geom_density(fill = 'grey') + 
-    geom_vline(aes(xintercept = data), color = colors$red, size = 2)
+    geom_vline(aes(xintercept = data), color = colors$red, size = 2) +
+    labs(x = 'modularity') +
+    ggtitle('Modularity') +
+    theme(aspect.ratio = 1)
   
   adjacency_vs_communities_tibble =
     res %>%
@@ -774,26 +790,22 @@ if(do.fdp){
     ) %>%
     left_join(
       tibble(
-        sp1 = names(membership),
-        sp1_community = membership
+        sp1 = membership$name,
+        sp1_community = membership$group
       ),
       by = 'sp1'
     ) %>%
     left_join(
       tibble(
-        sp2 = names(membership),
-        sp2_community = membership
+        sp2 = membership$name,
+        sp2_community = membership$group
       ),
       by = 'sp2'
     ) %>%
     mutate(
       same_community = 1 * (sp1_community == sp2_community),
       consensus_community = as.factor(ifelse(sp1_community == sp2_community, sp1_community, 0))
-    ) # %>%
-    # mutate(
-    #   sp1 = factor(sp1, levels = seriated_species),
-    #   sp2 = factor(sp2, levels = seriated_species)
-    # )
+    )
   
   membership_tibble = 
     adjacency_vs_communities_tibble %>%
@@ -991,23 +1003,27 @@ if(do.fdp){
   
   ## Kernel density estimation
   
+  if(fdp == 'bci') nx = 50
+  if(fdp == 'lap') nx = 25
+  ny = 25
+  
   evalpoints = 
     expand_grid(
-      x = (1:50  - .5) * 20,
-      y = (1:25 - .5) * 20
+      x = (1:nx - .5) * 20,
+      y = (1:ny - .5) * 20
     )
   
   df = 
     dat |> 
     inner_join(
       membership |> 
-        enframe() |> 
-        rename(sp = name, soiltype = value) |> 
+        rename(sp = name, soiltype = group) |> 
         mutate(soiltype = as.factor(soiltype)), 
       by = 'sp')
   
   results =
-    membership %>% 
+    membership %>%
+    pull(group) %>%
     unique %>% 
     sort %>%
     map_dfr(
@@ -1039,10 +1055,33 @@ if(do.fdp){
     ) %>%
     group_by(x, y) %>%
     mutate(
-      soiltype = factor(soiltype, levels = seq_along(membership %>% unique)),
+      soiltype = 
+        factor(
+          soiltype, 
+          levels = 
+            membership %>%
+            pull(group) %>%
+            unique %>% 
+            sort
+        ),
       prob = value / sum(value)
     ) %>%
     ungroup()
+  
+  if(fdp == 'bci') asprat = .5
+  if(fdp == 'lap') asprat = 1
+  
+  if(fdp == 'bci' & distance_threshold == 11){
+    results %<>%
+      mutate(
+        soiltype = 
+          1 * (soiltype == 1) +
+          3 * (soiltype == 2) +
+          2 * (soiltype == 3) +
+          4 * (soiltype == 4)
+      ) %>%
+      mutate(soiltype = factor(soiltype, levels = 1:4))
+  }
   
   plot_rasters =
     results %>% 
@@ -1051,7 +1090,8 @@ if(do.fdp){
     facet_wrap(~soiltype) +
     theme(aspect.ratio = .5) + 
     scale_fill_gradientn(colors = terrain.colors(100)) +
-    theme(strip.background = element_rect(fill = 'orange'))
+    theme(strip.background = element_rect(fill = 'orange')) +
+    theme(aspect.ratio = asprat)
   
   plot_majority_vote = 
     results %>% 
@@ -1059,7 +1099,7 @@ if(do.fdp){
     slice_max(prob) %>% 
     ggplot(aes(x, y, fill = soiltype)) + 
     geom_raster() + 
-    theme(aspect.ratio = .5)
+    theme(aspect.ratio = asprat)
   
   gridExtra::grid.arrange(
     plot_majority_vote,

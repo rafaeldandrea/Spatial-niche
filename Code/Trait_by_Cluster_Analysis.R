@@ -16,9 +16,8 @@ theme_update(
 )
 
 
-groups = 
-  readRDS('~/SpatialNiche/Data/bci_groups_cluster_louvain.rds') %>%
-  rename(group = community)
+# groups = readRDS('~/SpatialNiche/Data/bci_species_by_group_louvain.rds')
+groups = readRDS('~/SpatialNiche/Data/bci_species_by_group_louvain_dthresh_11.rds')
   
 trait_data = read_excel('~/BCI/BCITRAITS_20101220.xlsx')
 
@@ -232,13 +231,18 @@ full_dat %<>%
   ) %>%
   select(-c(cor_pc1, cor_pc2))
 
+pca_dat = 
+  full_dat %>% 
+  select(sp, trait = type, pc1, pc2, group) %>%
+  unique()
+
 pca_wide = 
   pca_dat %>%
   select(-pc2) %>%
   pivot_wider(names_from = trait, values_from = pc1)
 
 plot_pca =
-  pca_dat %>%
+  full_dat %>%
   ggplot(aes(pc1, pc2, color = group)) +
   geom_point() +
   facet_wrap(~trait, scales = 'free')
@@ -306,8 +310,19 @@ plot_violin_pc1 =
   geom_hline(yintercept = 0, linetype = 'dashed', color = 'grey') + 
   geom_violin() + 
   geom_text(aes(group, 0, label = label), data = labels_tbl) +
-  facet_wrap(~trait, scales = 'free') +
-  theme(legend.position = 'none')
+  facet_wrap(~trait) +
+  theme(legend.position = 'none') +
+  ylab('first principal component')
+
+plot_boxplot_pc1 = 
+  pca_dat %>% 
+  ggplot(aes(group, pc1, fill = group)) + 
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'grey') + 
+  geom_boxplot() + 
+  geom_text(aes(group, -5, label = label), data = labels_tbl, color = 'darkred') +
+  facet_wrap(~trait) +
+  theme(legend.position = 'none') +
+  ylab('first principal component')
 
 plot_violin_pc2 = 
   pca_dat %>% 
@@ -346,9 +361,9 @@ plot_violin_standardized =
   theme(legend.position = 'none') +
   ggtitle('Species trait distribution by group - normalized and standardized values')
 
-plot_violin_pc1 %>% show
 plot_pc1_vs_traits %>% show
-plot_violin_standardized %>% show
+# plot_violin_standardized %>% show
+plot_violin_pc1 %>% show
 
 
 

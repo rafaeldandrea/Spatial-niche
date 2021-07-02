@@ -13,28 +13,68 @@ theme_update(
 
 do.fgpt = 0
 
-dtf = NULL
-for(i in 1:3){
-  dtf = 
-    dtf %>%
-    bind_rows(
-      read.csv(paste0('~/SpatialNiche/Data/soiltype', i, '_dist_10_abd_50.csv')) %>%
-        as_tibble %>%
-        mutate(soiltype = i)
+fdp = 'bci'
+
+
+if(fdp == 'bci'){
+  nutrients = 
+    read_excel(
+      '~/SpatialNiche/Data/bci.block20.data-original.xls', 
+      sheet = 2
     )
+  
+  # dtf = NULL
+  # for(i in 1:3){
+  #   dtf = 
+  #     dtf %>%
+  #     bind_rows(
+  #       read.csv(paste0('~/SpatialNiche/Data/soiltype', i, '_dist_10_abd_50.csv')) %>%
+  #         as_tibble %>%
+  #         mutate(soiltype = i)
+  #     )
+  # }
+  # 
+  # soiltype = 
+  #   dtf %>%
+  #   pivot_longer(-c(X, soiltype), names_to = 'Y') %>%
+  #   mutate(Y = as.numeric(str_remove(Y, 'X'))) %>%
+  #   mutate(x = (1 + X) * 20 - 10, y = (1 + Y) * 20 - 10) %>%
+  #   select(X, Y, x, y, soiltype, value) %>%
+  #   group_by(soiltype) %>%
+  #   mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+  #   ungroup
+  
+  # soiltype = 
+  #   readRDS('~/SpatialNiche/Data/bci_20by20grid_soiltype_louvain.rds') %>%
+  #   rename(standardized = prob)
+  
+  soiltype = 
+    readRDS('~/SpatialNiche/Data/bci_20by20grid_soiltype_louvain_dthresh_11.rds') %>%
+    rename(standardized = prob)
+  
+} 
+
+if(fdp == 'lap'){
+  nutrients = 
+    read.csv(
+      '~/SpatialNiche/Data/Soil_data/resoilnutrientdatarequest/lap_20x20_soil.csv'
+      ) %>%
+    as_tibble %>%
+    mutate(
+      x = 10 * (2 * (x - 1) + 1),
+      y = 10 * (2 * (y - 1) + 1)
+    )
+  
+  soiltype = 
+    readRDS('~/SpatialNiche/Data/laplanada_20by20grid_soiltype_louvain.rds') %>%
+    rename(standardized = prob)
 }
 
-soiltype = 
-  dtf %>%
-  pivot_longer(-c(X, soiltype), names_to = 'Y') %>%
-  mutate(Y = as.numeric(str_remove(Y, 'X'))) %>%
-  mutate(x = (1 + X) * 20 - 10, y = (1 + Y) * 20 - 10) %>%
-  select(X, Y, x, y, soiltype, value) %>%
-  group_by(soiltype) %>%
-  mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+majority = 
+  soiltype %>% 
+  group_by(x, y) %>% 
+  slice_max(standardized, n = 1) %>%
   ungroup
-  
-nutrients = read_excel('~/SpatialNiche/Data/bci.block20.data-original.xls', sheet = 2)
 
 nutrients %<>%
   pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
@@ -55,14 +95,12 @@ unified =
 dtf_wide = 
   unified %>%
   pivot_wider(names_from = mark, values_from = value) %>%
-  group_by(x, y) %>% 
-  mutate(soiltype = which.max(c(`1`, `2`, `3`))) %>% 
-  ungroup %>%
+  left_join(majority, by = c('x', 'y')) %>%
   mutate(soiltype = factor(soiltype, levels = c(1, 2, 3)))
 
 pca_model = 
   dtf_wide %>%
-  select(6:18) %>%
+  select(-c(x, y, `1`, `2`, `3`, soiltype, standardized)) %>%
   pca(method = 'ppca', scale = 'none', center = FALSE)
 
 dtf_wide %<>%
@@ -79,7 +117,10 @@ plot_pca_colored_by_soiltype =
 
 plot_pca_colored_by_nutrient = 
   dtf_wide %>% 
-  pivot_longer(6:18, names_to = 'nutrient') %>%
+  pivot_longer(
+    -c(x, y, `1`, `2`, `3`, soiltype, standardized), 
+    names_to = 'nutrient'
+  ) %>%
   ggplot(aes(pc1, pc2, color = value)) +
   geom_point() +
   facet_wrap(~nutrient) +
@@ -87,10 +128,11 @@ plot_pca_colored_by_nutrient =
 
 plot_rasters = 
   unified %>%
+  filter(!mark %in% c('1', '2', '3')) %>%
   ggplot(aes(x, y, fill = value)) +
   geom_tile() +
-  facet_wrap(~mark, scales = 'free') +
-  scale_fill_gradient2(low = "#d7191c", mid = "#ffffbf", high = "#1a9641", midpoint = .5)
+  facet_wrap(~mark, scales = 'free', nrow = 2) +
+  scale_fill_gradientn(colors = terrain.colors(100))
 
 plot_histograms = 
   unified %>%
@@ -105,7 +147,7 @@ nutrient_soiltype_correlations =
   left_join(soiltype, by = c('x', 'y')) %>% 
   group_by(nutrient, soiltype) %>% 
   summarize(
-    cor = cor(standardized.x, standardized.y), 
+    cor = cor(standardized.x, standardized.y, use = 'complete.obs'), 
     p.value = cor.test(standardized.x, standardized.y)$p.value, 
     p.adj = p.adjust(p.value, method = 'bonferroni'),
     significant = (p.adj < .05),
@@ -114,12 +156,27 @@ nutrient_soiltype_correlations =
   ) 
 
 
+# plot_nutrient_soiltype_correlations =
+#   nutrient_soiltype_correlations %>%
+#   ggplot(aes(soiltype, nutrient, fill = cor_sig)) +
+#   geom_tile() +
+#   scale_fill_gradient2(low = "#d7191c", mid = "#ffffbf", high = "#1a9641", midpoint = 0) +
+#   theme(aspect.ratio = 2)
+  
 plot_nutrient_soiltype_correlations =
-  nutrient_soiltype_correlations %>%
-  ggplot(aes(soiltype, nutrient, fill = cor_sig)) +
-  geom_tile() +
-  scale_fill_gradient2(low = "#d7191c", mid = "#ffffbf", high = "#1a9641", midpoint = 0) +
-  theme(aspect.ratio = 2)
+  nutrient_soiltype_correlations |> 
+  ggplot(aes(nutrient, cor, group = soiltype, fill = soiltype)) + 
+  geom_col(position = 'dodge') + 
+  facet_wrap(~soiltype) +
+  labs(fill = 'group', y = 'Pearson correlation coefficient')
+
+
+plot_groups = 
+  dtf_wide %>%
+  ggplot(aes(x, y, fill = soiltype)) + 
+  geom_raster() +
+  theme(aspect.ratio = 1) +
+  labs(fill = 'group')
 
 nutrient_nutrient_correlations = 
   nutrients %>% 
