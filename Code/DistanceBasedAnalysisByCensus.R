@@ -572,7 +572,7 @@ if(do.fdp){
     get(
       load(
         url(
-          'https://github.com/rafaeldandrea/BCI/blob/master/bci.full7.rdata?raw=true'
+          'https://github.com/rafaeldandrea/BCI/blob/master/bci.full1.rdata?raw=true'
         )
       )
     ) %>%
@@ -941,8 +941,8 @@ if(do.fdp){
       ggplot(aes(gx, gy, color = community, group = community)) +
       geom_point() +
       labs(color = 'cluster') +
-      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) +
-      scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
+      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) #+
+      # scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
     
     plot_fdp_null = 
       dat %>%
@@ -951,8 +951,8 @@ if(do.fdp){
       ggplot(aes(gx, gy, color = nullcommunity, group = nullcommunity)) +
       geom_point() +
       labs(color = 'cluster') +
-      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) +
-      scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
+      theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1)) #+
+      # scale_color_manual(values = with(colors,c(red, green, blue, yellow)))
     
     gridExtra::grid.arrange(
       plot_adjacency_vs_communities,
