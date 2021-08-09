@@ -11,8 +11,8 @@ library(parallel)
 library(ks)       ## for kernel density estimation function kde() 
 
 plan(multisession, workers = detectCores() - 1)
-#load('~/R_Functions/colors.rdata')
-load('/Users/wangdz/Downloads/Spatial-niche-main-2/Data/colors.rdata')
+load('~/R_Functions/colors.rdata')
+# load('/Users/wangdz/Downloads/Spatial-niche-main-2/Data/colors.rdata')
 
 
 run.analysis = 0
@@ -163,7 +163,7 @@ if(do.fdp){
   abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
   
 
-  set.seed(scenario)
+  set.seed(0)
   
  
   bci = 
