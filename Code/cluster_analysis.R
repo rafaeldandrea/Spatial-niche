@@ -1,6 +1,6 @@
 ## New script
 
-library(wordspace) ## for function dist.matrix()
+library(parallelDist) ## for function parDist()
 library(seriation) ## for function seriate()
 library(caret) ## for function confusionMatrix()
 library(ggplotify) ## to convert from base plot to grob
@@ -127,6 +127,159 @@ read_laplanada = function(census){
   
 }
 
+# adjacency_matrix = 
+#   function(
+#     dat, 
+#     autolinked_species_only, 
+#     d_cutoff, 
+#     d_step, 
+#     Lx, 
+#     Ly
+#   ){
+#   
+#   distances = seq(0, d_cutoff, by = d_step) 
+#   
+#   pdexp_fdp = 
+#     distances %>%
+#     map_dbl(
+#       euclidean2d_distance_probability_ab,
+#       a = Ly,
+#       b = Lx
+#     )
+#   
+#   ## int p(r) * dr from 0 to d*
+#   cumulative_null_prob_threshold = sum(pdexp_fdp * d_step) 
+#   
+#   ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
+#   ## within a circle of radius d*
+#   abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
+#   
+#   abuns = 
+#     dat %>%
+#     count(sp) %>%
+#     arrange(desc(n))
+#   
+#   dat_filtered = 
+#     dat %>%
+#     inner_join(abuns, by = 'sp') %>%
+#     filter(n >= abundance_threshold)
+#   
+#   ## selects species that are more correlated with *themselves* than
+#   ## a hypothetical random pair of species with equal abundance
+#   if(autolinked_species_only){
+#     selected_species =
+#       unique(dat_filtered$sp) %>%
+#       map_dfr(
+#         .f = function(char){
+#           
+#           df = 
+#             dat_filtered %>%
+#             filter(sp == char)
+#           
+#           d = Rfast::Dist(cbind(df$gx, df$gy))
+#           
+#           nn12_positive = d[d > 0]
+#           
+#           connected =
+#             mean(nn12_positive <= d_cutoff) -
+#             cumulative_null_prob_threshold
+#           
+#           return(tibble(sp = char, keep = connected > 0))
+#         }
+#       ) %>%
+#       filter(keep == TRUE) %>%
+#       pull(sp)
+#     
+#   }else{
+#     selected_species = unique(dat_filtered$sp)
+#   }
+#   
+#   
+#   xy = 
+#     expand_grid(
+#       sp1 = selected_species,
+#       sp2 = selected_species
+#     ) %>%
+#     filter(sp2 >= sp1)
+#   
+#   sp_dtf = 
+#     xy %>%
+#     future_pmap_dfr(
+#       .f = function(sp1, sp2){
+#         df1 = 
+#           dat_filtered %>%
+#           filter(sp == sp1)
+#         
+#         df2 = 
+#           dat_filtered %>%
+#           filter(sp == sp2)
+#         
+#         nn12 = 
+#           Rfast::dista(
+#             df1 %>% 
+#               select(gx, gy) %>%
+#               as.matrix,
+#             df2 %>% 
+#               select(gx, gy) %>%
+#               as.matrix,
+#             type = 'euclidean'
+#           ) %>%
+#           as.numeric
+#         
+#         nn12_positive = nn12[nn12 > 0]
+#         
+#         connection = mean(nn12_positive <= d_cutoff)
+#         
+#         return(tibble(sp1, sp2, connection))
+#       },
+#       .options = furrr_options(seed = TRUE)
+#     ) %>%
+#     mutate(
+#       sp1 = factor(sp1), 
+#       sp2 = factor(sp2)
+#     ) %>%
+#     arrange(sp1, sp2)
+#   
+#   res = 
+#     sp_dtf %>%
+#     bind_rows(
+#       sp_dtf %>% 
+#         filter(sp1 != sp2) %>%
+#         rename(sp1 = sp2, sp2 = sp1)
+#     ) %>%
+#     unique
+#   
+#   res_matrix =
+#     res %>% 
+#     pivot_wider(
+#       id_cols = sp1, 
+#       names_from = sp2, 
+#       values_from = connection,
+#       values_fill = NA
+#     ) %>%
+#     select(-1) %>% 
+#     as.matrix 
+#   
+#   adjacency_matrix = 1 * (res_matrix > cumulative_null_prob_threshold)
+#   
+#   return(
+#     list(
+#       dat = dat,
+#       parms = 
+#         tibble(
+#           distance_cutoff = d_cutoff,
+#           distance_step = d_step,
+#           Lx = Lx,
+#           Ly = Ly,
+#           abundance_cutoff = abundance_threshold
+#         ),
+#       abundances = abuns,
+#       binary_adjacency_matrix = adjacency_matrix,
+#       weighted_adjacency_matrix = res_matrix
+#     )
+#   )
+# }
+
 adjacency_matrix = 
   function(
     dat, 
@@ -136,149 +289,258 @@ adjacency_matrix =
     Lx, 
     Ly
   ){
-  
-  distances = seq(0, d_cutoff, by = d_step) 
-  
-  pdexp_fdp = 
-    distances %>%
-    map_dbl(
-      euclidean2d_distance_probability_ab,
-      a = Ly,
-      b = Lx
-    )
-  
-  ## int p(r) * dr from 0 to d*
-  cumulative_null_prob_threshold = sum(pdexp_fdp * d_step) 
-  
-  ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
-  ## within a circle of radius d*
-  abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
-  
-  abuns = 
-    dat %>%
-    count(sp) %>%
-    arrange(desc(n))
-  
-  dat_filtered = 
-    dat %>%
-    inner_join(abuns, by = 'sp') %>%
-    filter(n >= abundance_threshold)
-  
-  ## selects species that are more correlated with *themselves* than
-  ## a hypothetical random pair of species with equal abundance
-  if(autolinked_species_only){
-    selected_species =
-      unique(dat_filtered$sp) %>%
-      map_dfr(
-        .f = function(char){
-          
-          df = 
-            dat_filtered %>%
-            filter(sp == char)
-          
-          d = dist(cbind(df$gx, df$gy))
-          
-          nn12_positive = d[d > 0]
-          
-          connected =
-            mean(nn12_positive <= d_cutoff) -
-            cumulative_null_prob_threshold
-          
-          return(tibble(sp = char, keep = connected > 0))
-        }
-      ) %>%
-      filter(keep == TRUE) %>%
-      pull(sp)
     
-  }else{
-    selected_species = unique(dat_filtered$sp)
-  }
-  
-  
-  xy = 
-    expand_grid(
-      sp1 = selected_species,
-      sp2 = selected_species
-    ) %>%
-    filter(sp2 >= sp1)
-  
-  sp_dtf = 
-    xy %>%
-    future_pmap_dfr(
-      .f = function(sp1, sp2){
-        df1 = 
-          dat_filtered %>%
-          filter(sp == sp1)
-        
-        df2 = 
-          dat_filtered %>%
-          filter(sp == sp2)
-        
-        nn12 = 
-          dist.matrix(
-            df1 %>% 
-              select(gx, gy) %>%
-              as.matrix,
-            df2 %>% 
-              select(gx, gy) %>%
-              as.matrix,
-            method = 'euclidean'
-          ) %>%
-          as.numeric
-        
-        nn12_positive = nn12[nn12 > 0]
-        
-        connection = mean(nn12_positive <= d_cutoff)
-        
-        return(tibble(sp1, sp2, connection))
-      },
-      .options = furrr_options(seed = TRUE)
-    ) %>%
-    mutate(
-      sp1 = factor(sp1), 
-      sp2 = factor(sp2)
-    ) %>%
-    arrange(sp1, sp2)
-  
-  res = 
-    sp_dtf %>%
-    bind_rows(
-      sp_dtf %>% 
-        filter(sp1 != sp2) %>%
-        rename(sp1 = sp2, sp2 = sp1)
-    ) %>%
-    unique
-  
-  res_matrix =
-    res %>% 
-    pivot_wider(
-      id_cols = sp1, 
-      names_from = sp2, 
-      values_from = connection,
-      values_fill = NA
-    ) %>%
-    select(-1) %>% 
-    as.matrix 
-  
-  adjacency_matrix = 1 * (res_matrix > cumulative_null_prob_threshold)
-  
-  return(
-    list(
-      dat = dat,
-      parms = 
-        tibble(
-          distance_cutoff = d_cutoff,
-          distance_step = d_step,
-          Lx = Lx,
-          Ly = Ly,
-          abundance_cutoff = abundance_threshold
-        ),
-      abundances = abuns,
-      binary_adjacency_matrix = adjacency_matrix,
-      weighted_adjacency_matrix = res_matrix
+    distances = seq(0, d_cutoff, by = d_step) 
+    
+    pdexp_fdp = 
+      distances %>%
+      future_map_dbl(
+        euclidean2d_distance_probability_ab,
+        a = Ly,
+        b = Lx,
+        .options = furrr_options(seed = TRUE)
+      )
+    
+    ## int p(r) * dr from 0 to d*
+    cumulative_null_prob_threshold = sum(pdexp_fdp * d_step) 
+    
+    ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
+    ## within a circle of radius d*
+    abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
+    
+    abuns = 
+      dat %>%
+      count(sp) %>%
+      arrange(desc(n))
+    
+    dat_filtered = 
+      dat %>%
+      inner_join(abuns, by = 'sp') %>%
+      filter(n >= abundance_threshold)
+    
+    ## selects species that are more correlated with *themselves* than
+    ## a hypothetical random pair of species with equal abundance
+    if(autolinked_species_only){
+      selected_species =
+        unique(dat_filtered$sp) %>%
+        future_map_dfr(
+          .f = function(char){
+            
+            df = 
+              dat_filtered %>%
+              filter(sp == char)
+            
+            d = parallelDist::parDist(cbind(df$gx, df$gy))
+            
+            nn12_positive = d[d > 0]
+            
+            connected =
+              mean(nn12_positive <= d_cutoff) -
+              cumulative_null_prob_threshold
+            
+            return(tibble(sp = char, keep = connected > 0))
+          },
+          .options = furrr_options(seed = TRUE)
+        ) %>%
+        filter(keep == TRUE) %>%
+        pull(sp)
+      
+    }else{
+      selected_species = unique(dat_filtered$sp)
+    }
+    
+    dat_selected = 
+      dat_filtered %>%
+      filter(sp %in% selected_species)
+    
+    distances = 
+      dat_selected %>%
+      select(gx, gy) %>%
+      as.matrix() %>%
+      parallelDist::parDist()
+    
+    inds = which(Rfast::lower_tri(rep(nrow(dat_selected), 2)) > 0) 
+    
+    foo =
+      tibble(
+        ind = inds,
+        distance = as.numeric(distances)
+      ) %>%
+      filter(distance <= d_cutoff)
+    
+    bar = 
+      arrayInd(foo$ind, .dim = rep(nrow(dat_selected), 2)) %>%
+      as_tibble %>%
+      rename(treeID1 = V1, treeID2 = V2) %>%
+      mutate(
+        sp1 = dat_selected$sp[treeID1],
+        sp2 = dat_selected$sp[treeID2],
+        distance = foo$distance
+      ) %>%
+      count(sp1, sp2)
+    
+    adjacency = 
+      bar %>%
+      bind_rows(
+        bar %>%
+          rename(sp1 = sp2, sp2 = sp1)
+      ) %>%
+      group_by(sp1, sp2) %>%
+      summarize(pairs = sum(n), .groups = 'drop') %>%
+      left_join(
+        abuns %>%
+          rename(sp1 = sp, n1 = n),
+        by = 'sp1'
+      ) %>%
+      left_join(
+        abuns %>%
+          rename(sp2 = sp, n2 = n),
+        by = 'sp2'
+      ) %>%
+      mutate(
+        weighted = pairs / n1 / n2,
+        binary = 1 * (weighted > cumulative_null_prob_threshold)
+      ) %>%
+      select(-c(pairs, n1, n2))
+    
+    # df = 
+    #   inds %>%
+    #   arrayInd(.dim = rep(nrow(dat_selected), 2)) %>%
+    #   as_tibble %>%
+    #   rename(treeID1 = V1, treeID2 = V2) %>%
+    #   mutate(
+    #     sp1 = dat_selected$sp[treeID1],
+    #     sp2 = dat_selected$sp[treeID2],
+    #     distance = as.numeric(distances)
+    #   )
+      
+    
+    
+    # ids = 
+    #   left_join(
+    #     tibble(
+    #       treeID1 = seq(nrow(dat_selected)), 
+    #       sp1 = dat_selected$sp
+    #     ),
+    #     tibble(
+    #       treeID2 = seq(nrow(dat_selected)), 
+    #       sp2 = dat_selected$sp
+    #     ),
+    #     by = character()
+    #   ) %>%
+    #   filter(treeID1 > treeID2) %>%
+    #   arrange(treeID2, treeID1)
+    # 
+    # df = 
+    #   ids %>%
+    #   bind_cols(distance = as.numeric(distances))
+    # 
+    
+    # adjacency = 
+    #   df %>%
+    #   bind_rows(
+    #     df %>%
+    #       rename(sp2 = sp1, sp1 = sp2)
+    #   ) %>%
+    #   group_by(sp1, sp2) %>%
+    #   summarize(
+    #     weighted = mean(distance <= d_cutoff),
+    #     binary = 1 * (weighted > cumulative_null_prob_threshold),
+    #     .groups = 'drop'
+    #   )
+    
+    return(
+      list(
+        dat = dat,
+        parms = 
+          tibble(
+            distance_cutoff = d_cutoff,
+            distance_step = d_step,
+            Lx = Lx,
+            Ly = Ly,
+            abundance_cutoff = abundance_threshold
+          ),
+        abundances = abuns,
+        adjacency = adjacency
+      )
     )
-  )
-}
+  }
+
+# cluster_analysis = 
+#   function(
+#     A, 
+#     algorithm,
+#     weighted,
+#     self_loops
+#   ){
+#     
+#     if(!weighted){
+#       adjacency_matrix = A$binary_adjacency_matrix
+#       weight_parameter = NULL
+#     } 
+#     
+#     if(weighted){
+#       adjacency_matrix = A$weighted_adjacency_matrix
+#       weight_parameter = TRUE
+#     } 
+#     
+#     graph = 
+#       graph_from_adjacency_matrix(
+#         adjacency_matrix, 
+#         weighted = weight_parameter,
+#         mode = 'undirected',
+#         diag = self_loops
+#       )  
+#     
+#     fn = get(paste0('cluster_', algorithm))
+#     communities = try(fn(graph), silent = TRUE)
+#     
+#     if(class(communities) == 'try-error'){
+#       communities = NA
+#       
+#       result = 
+#         tibble(
+#           name = seq(nrow(adjacency_matrix)),
+#           algorithm = algorithm, 
+#           weighted = weighted,
+#           self_loops = self_loops,
+#           group = factor(name),
+#           modularity = 0,
+#           number_of_groups = nrow(adjacency_matrix)
+#         ) 
+#     }else{
+#       result = 
+#         membership(communities) %>%
+#         enframe %>%
+#         rename(group = value) %>%
+#         mutate(
+#           algorithm = algorithm, 
+#           weighted = weighted,
+#           self_loops = self_loops,
+#           group = factor(group),
+#           modularity = modularity(communities),
+#           number_of_groups = length(communities)
+#         )
+#     }
+#     
+#     
+#     return(
+#       list(
+#         data = A,
+#         adjacency_matrix = adjacency_matrix,
+#         parms = 
+#           tibble(
+#             algorithm, 
+#             weighted , 
+#             self_loops
+#           ),
+#         graph = graph,
+#         communities = communities,
+#         result = result
+#       )
+#     )
+#     
+#   }
 
 cluster_analysis = 
   function(
@@ -289,13 +551,31 @@ cluster_analysis =
   ){
     
     if(!weighted){
-      adjacency_matrix = A$binary_adjacency_matrix
       weight_parameter = NULL
+      
+      adjacency_matrix = 
+        A$adjacency %>% 
+        select(-weighted) %>% 
+        pivot_wider(
+          names_from = sp2, 
+          values_from = binary
+        ) %>% 
+        select(-sp1) %>% 
+        as.matrix
     } 
     
     if(weighted){
-      adjacency_matrix = A$weighted_adjacency_matrix
       weight_parameter = TRUE
+      
+      adjacency_matrix = 
+        A$adjacency %>% 
+        select(-binary) %>% 
+        pivot_wider(
+          names_from = sp2, 
+          values_from = weighted
+        ) %>% 
+        select(-sp1) %>% 
+        as.matrix
     } 
     
     graph = 
@@ -307,20 +587,36 @@ cluster_analysis =
       )  
     
     fn = get(paste0('cluster_', algorithm))
-    communities = fn(graph)
+    communities = try(fn(graph), silent = TRUE)
     
-    result = 
-      membership(communities) %>%
-      enframe %>%
-      rename(group = value) %>%
-      mutate(
-        algorithm = algorithm, 
-        weighted = weighted,
-        self_loops = self_loops,
-        group = factor(group),
-        modularity = modularity(communities),
-        number_of_groups = length(communities)
-      ) 
+    if(class(communities) == 'try-error'){
+      communities = NA
+      
+      result = 
+        tibble(
+          name = seq(nrow(adjacency_matrix)),
+          algorithm = algorithm, 
+          weighted = weighted,
+          self_loops = self_loops,
+          group = factor(name),
+          modularity = 0,
+          number_of_groups = nrow(adjacency_matrix)
+        ) 
+    }else{
+      result = 
+        membership(communities) %>%
+        enframe %>%
+        rename(group = value) %>%
+        mutate(
+          algorithm = algorithm, 
+          weighted = weighted,
+          self_loops = self_loops,
+          group = factor(group),
+          modularity = modularity(communities),
+          number_of_groups = length(communities)
+        )
+    }
+    
     
     return(
       list(
