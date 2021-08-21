@@ -117,6 +117,40 @@ read_laplanada = function(census){
   
 }
 
+read_all_laplanada = function(){
+  address1 = 
+    paste0(
+      '~/SpatialNiche/Data/relaplanadacensusdata/Censo ',
+      1,
+      '_La Planada.txt'
+    )
+  address2 = 
+    paste0(
+      '~/SpatialNiche/Data/relaplanadacensusdata/Censo ',
+      2,
+      '_La Planada.txt'
+    )
+  lap1 = 
+    read.table(
+      address1, 
+      header = TRUE
+    ) %>%
+    as_tibble %>%
+    mutate(census = 1)
+  
+  lap2 = 
+    read.table(
+      address2, 
+      header = TRUE
+    ) %>%
+    as_tibble %>%
+    mutate(census = 2)
+  lap = rbind(lap1,lap2)%>%
+    filter(dbh >= 100) %>%
+    select(sp, gx, gy,census) 
+    
+  
+}
 
 adjacency_matrix = 
   function(
