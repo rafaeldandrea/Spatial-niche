@@ -30,6 +30,7 @@ if(do.clustering.analysis){
     
     cores = if(mypc) 4 else detectCores() - 10
     plan(multisession, workers = cores)
+    save_date = gsub('-', '', Sys.Date())
     save_directory = paste0('~/SpatialNiche/', save_date, '/')
     
     source('~/SpatialNiche/Code/clustering_functions.R')
@@ -129,7 +130,6 @@ if(do.clustering.analysis){
           .options = furrr_options(seed = TRUE)
         )
       
-      save_date = gsub('-', '', Sys.Date())
       save_directory = paste0('~/SpatialNiche/', save_date, '/')
       dir.create(save_directory, showWarnings = FALSE)
       
