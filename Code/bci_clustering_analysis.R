@@ -45,17 +45,19 @@ if(do.clustering.analysis){
           )
         )
       filename = paste0(save_directory, 'bci_clustering_analysis.rds')
-      
+      thecensus=1:7
     }
     if(fdp == 'lap') 
     {Lx = 500
     bci  = read_all_laplanada()
     filename = paste0(save_directory, 'lap_clustering_analysis.rds')
+    thecensus=1:2
+    
     }
     
     parameters = 
       expand_grid(
-        thecensus = 1:2,
+        thecensus = thecensus,
          algorithm = c('louvain', 'walktrap'),
          #algorithm = c('louvain'),
         d_cutoff = seq(10, 30, by = 2),
@@ -251,11 +253,21 @@ if(do.recruitment.analysis){
   plan(multisession, workers = cores)
   
   if(!exists('combined_data')){
+    if(fdp == 'bci'){
     census_data = 
-      readRDS('c:/users/rdand/Google Drive/GitHub/Spatial-niche/Data/all_data.rds')
-    
+      readRDS('~/SpatialNiche/Data/all_data.rds')
     cluster_data = 
-      readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
+      readRDS('~/SpatialNiche/Data/20210820/bci_clustering_analysis.rds')
+    }
+    if(fdp == 'lap'){
+      census_data = 
+        readRDS('~/SpatialNiche/Data/lap_all_data.rds')
+      cluster_data = 
+        readRDS('~/SpatialNiche/Data/20210820/lap_clustering_analysis.rds')
+    }
+    
+    
+    cluster_data = cluster_data %>%
       rename(sp = name) %>%
       filter(
         algorithm == 'louvain',
@@ -316,7 +328,7 @@ if(do.recruitment.analysis){
   
   if(!file.exists('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')){
     KernelDensityEstimation = 
-      function(gx, gy, Lx = 1000, Ly = 500, quadrat_length = 20, ...){
+      function(gx, gy, Lx = Lx, Ly = 500, quadrat_length = 20, ...){
         
         evalpoints =
           expand_grid(
@@ -534,14 +546,28 @@ if(do.nutrient.analysis){
       group_by(nutrient) %>%
       mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
       ungroup
+    
+      kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
+    
+  }
+  if (fdp=='Lap'){
+    t= read_excel(
+      '~/SpatialNiche/Data/LAP_nutrients/laplanada.dataJul05.xls',sheet =4) %>%
+      #move from left lower to cener
+      mutate(gx =gx+10,gy=gy+10)%>%
+      pivot_longer(-c(gx, gy), names_to = 'nutrient') %>% 
+      group_by(nutrient) %>%
+      mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+      ungroup
+  }
+    
   }
     nutrients_wide = 
       nutrients %>%
       select(-value) %>%
       pivot_wider(names_from = nutrient, values_from = standardized)
     
-    kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
-    
+
     kde = 
       kde_full %>%
       select(-c(group, density)) %>%
