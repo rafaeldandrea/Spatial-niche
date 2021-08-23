@@ -32,8 +32,8 @@ if(do.clustering.analysis){
     plan(multisession, workers = cores)
     save_directory = paste0('~/SpatialNiche/', save_date, '/')
     
-    source('~/SpatialNiche/Code/clustering_functions.R')
-  
+    source('https://github.com/rafaeldandrea/Spatial-niche/raw/main/Code/clustering_functions.R')
+    
     Ly = 500
     if(fdp == 'bci'){
       Lx = 1000
@@ -46,28 +46,41 @@ if(do.clustering.analysis){
       filename = paste0(save_directory, 'bci_clustering_analysis.rds')
       
     }
+<<<<<<< Updated upstream
     if(fdp == 'lap') 
     {Lx = 500
     bci  = read_all_laplanada()
     filename = paste0(save_directory, 'lap_clustering_analysis.rds')
+=======
+    
+    if(fdp == 'lap'){
+      Lx = 500
+      bci  = read_all_laplanada()
+      filename = paste0(save_directory, 'lap_clustering_analysis.rds')
+>>>>>>> Stashed changes
     }
+    
+    censuses = if(fdp == 'bci') 1:7 else if(fdp == 'lap') 1:2
     
     parameters = 
       expand_grid(
+<<<<<<< Updated upstream
         thecensus = 1:2,
          algorithm = c('louvain', 'walktrap'),
          #algorithm = c('louvain'),
+=======
+        census = censuses,
+        algorithm = c('louvain', 'walktrap'),
+>>>>>>> Stashed changes
         d_cutoff = seq(10, 30, by = 2),
         self_loops = FALSE,
         d_step = 1e-5,
         Lx = Lx,
         Ly = 500,
         autolinked_species_only = TRUE,
-        #weighted = c(TRUE),
         weighted = c(TRUE, FALSE),
         seed = 0:10
-      ) %>%
-      filter(algorithm=='walktrap'|seed==0)
+      )
     
     chunk_size = cores
     
@@ -81,7 +94,7 @@ if(do.clustering.analysis){
         parms %>%
         future_pmap_dfr(
           .f = function(
-            thecensus,
+            census,
             algorithm,
             d_cutoff,
             self_loops,
@@ -94,8 +107,8 @@ if(do.clustering.analysis){
           ){
             
             dat =
-              bci #%>%
-              #filter(census == thecensus)
+              bci %>%
+              filter(census == get('census', pos = sys.frame()))
             
             if(seed > 0){
               dat %<>%
@@ -118,7 +131,7 @@ if(do.clustering.analysis){
               ) %>%
               pluck('result') %>%
               mutate(
-                census = thecensus,
+                census = census,
                 d_cutoff = d_cutoff,
                 autolinked_species_only = autolinked_species_only,
                 d_step = d_step,
@@ -133,7 +146,7 @@ if(do.clustering.analysis){
       save_directory = paste0('~/SpatialNiche/', save_date, '/')
       dir.create(save_directory, showWarnings = FALSE)
       
-
+      
       if(file.exists(filename)){
         bci_analyzed = 
           readRDS(filename) %>%
@@ -524,6 +537,7 @@ if(do.nutrient.analysis){
     library(caret)
     library(C50)
     library(readxl)
+<<<<<<< Updated upstream
   if (fdp=='bci'){
     nutrients = 
       read_excel(
@@ -535,6 +549,19 @@ if(do.nutrient.analysis){
       mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
       ungroup
   }
+=======
+    if (fdp=='bci'){
+      nutrients = 
+        read_excel(
+          '~/SpatialNiche/Data/bci.block20.data-original.xls', 
+          sheet = 2
+        ) %>%
+        pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
+        group_by(nutrient) %>%
+        mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+        ungroup
+    }
+>>>>>>> Stashed changes
     nutrients_wide = 
       nutrients %>%
       select(-value) %>%
@@ -737,7 +764,7 @@ if(do.nutrient.analysis){
   }
   
 }
-  
+
 if(do.trait.analysis){
   
   
@@ -1138,9 +1165,9 @@ if(do.trait.analysis){
     ) %>%
     inner_join(data) %>%
     inner_join(nutrients)
-    
   
-
+  
+  
 }  
 
 
@@ -1197,7 +1224,7 @@ if(FALSE){
       },
       .options = furrr_options(seed = TRUE)
     )
-
+  
   summary_res = 
     res %>%
     mutate(
