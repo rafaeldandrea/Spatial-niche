@@ -21,7 +21,7 @@ do.trait.analysis = 0
 
 do.data = 1
 do.plots = 1
-fdp = 'bci'
+fdp = 'lap'
 
 if(do.clustering.analysis){
   
@@ -35,9 +35,8 @@ if(do.clustering.analysis){
     
     source('~/SpatialNiche/Code/clustering_functions.R')
   
-    Ly = 500
     if(fdp == 'bci'){
-      L = 1000
+      Lx = 1000
       bci =
         readRDS(
           url(
@@ -48,7 +47,7 @@ if(do.clustering.analysis){
       thecensus=1:7
     }
     if(fdp == 'lap') 
-    {L = 500
+    {Lx = 500
     bci  = read_all_laplanada()
     filename = paste0(save_directory, 'lap_clustering_analysis.rds')
     thecensus=1:2
@@ -423,7 +422,7 @@ if(do.recruitment.analysis){
         soiltype,
         by = c('x', 'y', 'census', 'algorithm', 'seed', 'd_cutoff')
       ) %>% 
-      mutate(fdp = 'bci')
+      mutate(fdp = fdp)
     
     saveRDS(kde_full, file = kde_name)
     
@@ -550,15 +549,19 @@ if(do.nutrient.analysis){
       kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
     
   }
-  if (fdp=='Lap'){
-    t= read_excel(
+  if (fdp=='lap'){
+    nutrients= read_excel(
       '~/SpatialNiche/Data/LAP_nutrients/laplanada.dataJul05.xls',sheet =4) %>%
       #move from left lower to cener
       mutate(gx =gx+10,gy=gy+10)%>%
       pivot_longer(-c(gx, gy), names_to = 'nutrient') %>% 
       group_by(nutrient) %>%
+      rename(x=gx)%>%
+      rename(y=gy)%>%
       mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
       ungroup
+    kde_full = readRDS('~/SpatialNiche/Data/lap_inferred_soiltypes.rds')
+    
   }
     
   }
@@ -602,7 +605,10 @@ if(do.nutrient.analysis){
               d_cutoff == D_cutoff,
               fdp == Fdp
             ) %>%
-            select(Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype) %>%
+            {if (fdp == 'bci') select(.,Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
+              else .} %>% 
+            {if (fdp == 'lap')select(.,Al, Ca, Cu, Fe, K, Mg, Mn, P, Zn, pH, soiltype)
+              else .}%>%
             mutate(soiltype = factor(soiltype, levels = unique(soiltype)))
           
           set.seed(Seed)
