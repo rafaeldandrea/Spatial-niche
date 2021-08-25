@@ -19,8 +19,8 @@ do.recruitment.analysis = 0
 do.nutrient.analysis = 0
 do.trait.analysis = 0
 
-do.data = 1
-do.plots = 0
+do.data = 0
+do.plots = 1
 fdp = 'lap'
 
 if(do.clustering.analysis){
@@ -150,7 +150,9 @@ if(do.clustering.analysis){
   }
   
   if(do.plots){
-    data = readRDS('~/SpatialNiche/20210820/lap_clustering_analysis.rds')
+    data = 
+      readRDS('~/SpatialNiche/Data/20210823/lap_clustering_analysis.rds') %>%
+      filter(weighted == TRUE)
     
     summary = 
       data %>%
