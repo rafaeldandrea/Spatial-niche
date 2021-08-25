@@ -14,14 +14,14 @@ theme_update(
 )
 
 
-do.clustering.analysis = 1
-do.recruitment.analysis = 0
+do.clustering.analysis = 0
+do.recruitment.analysis = 1
 do.nutrient.analysis = 0
 do.trait.analysis = 0
 
 do.data = 1
-do.plots = 0
-fdp = 'lap'
+do.plots = 1
+fdp = 'bci'
 
 if(do.clustering.analysis){
   
@@ -37,7 +37,7 @@ if(do.clustering.analysis){
   
     Ly = 500
     if(fdp == 'bci'){
-      Lx = 1000
+      L = 1000
       bci =
         readRDS(
           url(
@@ -48,7 +48,7 @@ if(do.clustering.analysis){
       thecensus=1:7
     }
     if(fdp == 'lap') 
-    {Lx = 500
+    {L = 500
     bci  = read_all_laplanada()
     filename = paste0(save_directory, 'lap_clustering_analysis.rds')
     thecensus=1:2
@@ -97,8 +97,8 @@ if(do.clustering.analysis){
           ){
             
             dat =
-              bci #%>%
-              #filter(census == thecensus)
+              bci %>%
+              filter(census == thecensus)
             
             if(seed > 0){
               dat %<>%
@@ -146,9 +146,8 @@ if(do.clustering.analysis){
       
     }
   }
-  
   if(do.plots){
-    data = readRDS('~/SpatialNiche/20210820/lap_clustering_analysis.rds')
+    data = readRDS('/Users/wangdz/Downloads/lap_clustering_analysis.rds')
     
     summary = 
       data %>%
@@ -249,24 +248,25 @@ if(do.recruitment.analysis){
   
   ## Determine whether working on SeaWulf (SBU hpc) or personal computer
   seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
-  cores = if(seawulf) detectCores() else 6
-  plan(multisession, workers = cores)
-  
-  if(!exists('combined_data')){
-    if(fdp == 'bci'){
+  cores = if(seawulf) detectCores() else 4
+ plan(multisession, workers = cores)
+  if(fdp == 'bci'){
     census_data = 
       readRDS('~/SpatialNiche/Data/all_data.rds')
     cluster_data = 
       readRDS('~/SpatialNiche/Data/20210820/bci_clustering_analysis.rds')
-    }
-    if(fdp == 'lap'){
-      census_data = 
-        readRDS('~/SpatialNiche/Data/lap_all_data.rds')
-      cluster_data = 
-        readRDS('~/SpatialNiche/Data/20210820/lap_clustering_analysis.rds')
-    }
-    
-    
+    L = 1000
+    kde_name = '~/SpatialNiche/Data/bci_inferred_soiltypes.rds'
+  }
+  if(fdp == 'lap'){
+    census_data = 
+      readRDS('~/SpatialNiche/Data/lap_all_data.rds')
+    cluster_data = 
+      readRDS('~/SpatialNiche/Data/20210824/lap_clustering_analysis.rds')
+    L = 500
+    kde_name = '~/SpatialNiche/Data/lap_inferred_soiltypes.rds'
+  }
+  if(!exists('combined_data')){
     cluster_data = cluster_data %>%
       rename(sp = name) %>%
       filter(
@@ -325,10 +325,10 @@ if(do.recruitment.analysis){
         Seed == 0
       )
   }
-  
-  if(!file.exists('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')){
+
+  if(!file.exists(kde_name)){
     KernelDensityEstimation = 
-      function(gx, gy, Lx = Lx, Ly = 500, quadrat_length = 20, ...){
+      function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
         
         evalpoints =
           expand_grid(
@@ -425,10 +425,10 @@ if(do.recruitment.analysis){
       ) %>% 
       mutate(fdp = 'bci')
     
-    saveRDS(kde_full, file = '~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
+    saveRDS(kde_full, file = kde_name)
     
   }else{
-    kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
+    kde_full = readRDS(kde_name)
   }
   
   rec_df = 
@@ -762,7 +762,7 @@ if(do.nutrient.analysis){
     
   }
   
-}
+
   
 if(do.trait.analysis){
   
