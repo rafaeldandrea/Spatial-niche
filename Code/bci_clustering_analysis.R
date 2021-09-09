@@ -14,14 +14,40 @@ theme_update(
 )
 
 
-do.clustering.analysis = 1
+do.clustering.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
-do.trait.analysis = 0
+do.trait.analysis = 1
 
 do.data = 0
 do.plots = 1
-fdp = 'lap'
+fdp = 'bci'
+
+filter = dplyr::filter
+
+data_directory = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/'
+suffix = '?raw=true'
+
+census_filename = paste0(data_directory, fdp, '_census_data.rds', suffix)
+cluster_filename = paste0(data_directory, fdp, '_clustering_analysis.rds', suffix)
+kde_filename = paste0(data_directory, fdp, '_inferred_soiltypes.rds', suffix)
+soiltype_v_nutrients_filename = paste0(data_directory, fdp, '_C5_soiltype_vs_nutrients.rds', suffix)
+if(fdp == 'bci') nutrients_filename = paste0(data_directory, 'bci.block20.data-original.xls', suffix)
+if(fdp == 'lap') nutrients_filename = paste0(data_directory, 'laplanada.dataJul05.xls', suffix)
+traits_filename = paste0(data_directory, '~/BCI/BCITRAITS_20101220.xlsx', suffix) ## no trait data available for La Planada
+
+census_data = readRDS(census_filename)
+cluster_data = readRDS(cluster_filename)
+kde_full = readRDS(kde_filename)
+MLres = readRDS(soiltype_v_nutrients_filename)
+trait_data_raw = read_excel(traits_filename)
+
+
+save_date = gsub('-', '', Sys.Date())
+save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
+
+
+L = ifelse(fdp == 'bci', 1000, 500)
 
 if(do.clustering.analysis){
   
@@ -31,11 +57,10 @@ if(do.clustering.analysis){
     cores = if(mypc) 4 else detectCores() - 10
     plan(multisession, workers = cores)
     save_date = gsub('-', '', Sys.Date())
-    save_directory = paste0('~/SpatialNiche/', save_date, '/')
+    save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
     
-    source('https://github.com/rafaeldandrea/Spatial-niche/raw/main/Code/clustering_functions.R')
-    
-    Ly = 500
+    source('https://github.com/rafaeldandrea/Spatial-niche/raw/Lap/Code/clustering_functions.R')
+  
     if(fdp == 'bci'){
       Lx = 1000
       bci =
@@ -45,31 +70,35 @@ if(do.clustering.analysis){
           )
         )
       filename = paste0(save_directory, 'bci_clustering_analysis.rds')
-      
+      thecensus=1:7
     }
-
+    
     if(fdp == 'lap'){
       Lx = 500
       bci  = read_all_laplanada()
       filename = paste0(save_directory, 'lap_clustering_analysis.rds')
-
+      thecensus = 1:2
     }
-    
-    censuses = if(fdp == 'bci') 1:7 else if(fdp == 'lap') 1:2
     
     parameters = 
       expand_grid(
-        census = censuses,
+        thecensus = thecensus,
         algorithm = c('louvain', 'walktrap'),
         d_cutoff = seq(10, 30, by = 2),
         self_loops = FALSE,
         d_step = 1e-5,
         Lx = Lx,
-        Ly = Ly,
+        Ly = 500,
         autolinked_species_only = TRUE,
         weighted = TRUE,
         seed = 0:10
       )
+    
+    if(fdp %in% c('bci', 'lap')){
+      parameters %<>%
+        filter(algorithm == 'louvain', seed == 0)  
+    }
+      
     
     chunk_size = cores
     
@@ -79,11 +108,11 @@ if(do.clustering.analysis){
       
       parms = parameters[indices, ]
       
-      bci_analyzed = 
+      fdp_analyzed = 
         parms %>%
         future_pmap_dfr(
           .f = function(
-            census,
+            thecensus,
             algorithm,
             d_cutoff,
             self_loops,
@@ -94,8 +123,6 @@ if(do.clustering.analysis){
             weighted,
             seed
           ){
-            
-            thecensus = census
             
             dat =
               bci %>%
@@ -122,7 +149,7 @@ if(do.clustering.analysis){
               ) %>%
               pluck('result') %>%
               mutate(
-                census = census,
+                census = thecensus,
                 d_cutoff = d_cutoff,
                 autolinked_species_only = autolinked_species_only,
                 d_step = d_step,
@@ -131,28 +158,150 @@ if(do.clustering.analysis){
               return()
           },
           .options = furrr_options(seed = TRUE)
-        )
+        ) %>%
+        rename(sp = name)
       
-      save_date = gsub('-', '', Sys.Date())
-      save_directory = paste0('~/SpatialNiche/', save_date, '/')
       dir.create(save_directory, showWarnings = FALSE)
       
-      
+
       if(file.exists(filename)){
-        bci_analyzed = 
+        fdp_analyzed = 
           readRDS(filename) %>%
-          bind_rows(bci_analyzed)
+          bind_rows(fdp_analyzed)
       }
       
-      saveRDS(bci_analyzed, file = filename)
-      
+      saveRDS(fdp_analyzed, file = filename)
     }
+    
+    cluster_data = readRDS(filename)
+    
+    adults = 
+      census_data %>%
+      filter(dbh >= 100) %>%
+      select(census, treeID, sp, gx, gy, dbh)
+    
+    recruits = 
+      adults %>%
+      filter(census > 1) %>%
+      group_by(treeID) %>%
+      slice_min(census) %>%
+      ungroup %>%
+      mutate(recruit = TRUE)
+    
+    trees =
+      adults %>% 
+      left_join(
+        recruits, 
+        by = c('census', 'treeID', 'sp', 'gx', 'gy', 'dbh')
+      ) %>%
+      replace_na(list(recruit = FALSE))
+    
+    combined_data =
+      trees %>%
+      inner_join(
+        cluster_data, 
+        by = c('census', 'sp')
+      )
+    
+    reference =
+      combined_data %>%
+      inner_join(
+        combined_data %>%
+          select(census, d_cutoff, number_of_groups) %>%
+          unique() %>%
+          slice_max(number_of_groups, with_ties = FALSE)
+      ) %>%
+      count(group) %>%
+      mutate(reference = rev(rank(n))) %>%
+      full_join(
+        combined_data %>%
+          inner_join(
+            combined_data %>%
+              select(census, d_cutoff, number_of_groups) %>%
+              unique() %>%
+              slice_max(number_of_groups, with_ties = FALSE)
+          )
+      ) %>%
+      select(treeID, reference)
+    
+    z_full = NULL
+    for(thecensus in sort(unique(combined_data$census))){
+      
+      for(thed_cutoff in sort(unique(combined_data$d_cutoff))){
+        
+        z = NULL
+        
+        x =
+          combined_data %>%
+          filter(
+            census == thecensus,
+            d_cutoff == thed_cutoff
+          ) %>%
+          inner_join(
+            reference,
+            by = 'treeID'
+          ) %>%
+          count(
+            census,
+            d_cutoff,
+            group,
+            reference
+          ) %>%
+          mutate(group = factor(group)) %>%
+          complete(group, nesting(census, d_cutoff, reference)) %>%
+          replace_na(list(n = 0)) %>%
+          arrange(desc(n))
+        
+        if(nrow(x) > 0){
+          z %<>%
+            bind_rows(
+              tibble(
+                census = thecensus,
+                d_cutoff = thed_cutoff,
+                group = x$group[1],
+                reference = x$reference[1]
+              )
+            )
+          
+          for(i in 2:nrow(x)){
+            
+            g = x$group[i]
+            r = x$reference[i]
+            
+            if(!g %in% z$group & !r %in% z$reference){
+              z %<>%
+                bind_rows(
+                  tibble(
+                    census = thecensus,
+                    d_cutoff = thed_cutoff,
+                    group = g,
+                    reference = r
+                  )
+                )
+              
+              z_full %<>%
+                bind_rows(z)
+            }
+          }
+        }
+      }
+    }
+    
+    z_full %<>%
+      unique()
+    
+    cluster_data_consistent =
+      cluster_data %>%
+      inner_join(z_full) %>%
+      mutate(group = reference) %>%
+      select(-reference)
+    
+    saveRDS(cluster_data_consistent, filename)
+    
   }
   
   if(do.plots){
-    data = 
-      readRDS('~/SpatialNiche/Data/20210823/lap_clustering_analysis.rds') %>%
-      filter(weighted == TRUE)
+    data = readRDS('/Users/wangdz/Downloads/lap_clustering_analysis.rds')
     
     summary = 
       data %>%
@@ -246,191 +395,261 @@ if(do.clustering.analysis){
   }
   
 }
-  
 
-
+## Definition of theta := P(recruit | match) / P(recruit | !match)
 if(do.recruitment.analysis){
   
-  library(sparr) # for function bivariate.density()
+  library(sparr) # for function bivariate.density() in KDE()
+  filter = dplyr::filter
   
   ## Determine whether working on SeaWulf (SBU hpc) or personal computer
   seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
-  cores = if(seawulf) detectCores() else 6
+  cores = if(seawulf) detectCores() else 4
   plan(multisession, workers = cores)
   
-  if(!exists('combined_data')){
-    census_data = 
-      readRDS('c:/users/rdand/Google Drive/GitHub/Spatial-niche/Data/all_data.rds')
-    
-    cluster_data = 
-      readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
-      rename(sp = name) %>%
-      filter(
-        algorithm == 'louvain',
-        weighted == TRUE,
-        seed == 0
-      ) %>%
-      mutate(
-        group = 
-          factor(
-            group, 
-            levels = sort(unique(group))
-          )
-      )
-    
-    adults = 
-      census_data %>%
-      filter(dbh >= 100) %>%
-      select(census, treeID, sp, gx, gy, dbh)
-    
-    recruits = 
-      adults %>%
-      filter(census > 1) %>%
-      group_by(treeID) %>%
-      slice_min(census) %>%
-      ungroup %>%
-      mutate(recruit = TRUE)
-    
-    trees =
-      adults %>% 
-      left_join(
-        recruits, 
-        by = c('census', 'treeID', 'sp', 'gx', 'gy', 'dbh')
-      ) %>%
-      replace_na(list(recruit = FALSE))
-    
-    combined_data =
-      trees %>%
-      inner_join(
-        cluster_data, 
-        by = c('census', 'sp')
-      )
-    
-    parms = 
-      combined_data %>%
-      select(
-        Census = census, 
-        Algorithm = algorithm,
-        Seed = seed,
-        D_cutoff = d_cutoff,
-        Group = group
-      ) %>%
-      unique %>%
-      filter(
-        Algorithm == 'louvain',
-        Seed == 0
-      )
-  }
+  adults = 
+    census_data %>%
+    filter(dbh >= 100) %>%
+    select(census, treeID, sp, gx, gy, dbh)
   
-  if(!file.exists('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')){
-    KernelDensityEstimation = 
-      function(gx, gy, Lx = 1000, Ly = 500, quadrat_length = 20, ...){
-        
-        evalpoints =
-          expand_grid(
-            x = quadrat_length / 2 + seq(0, Lx - quadrat_length, by = quadrat_length),
-            y = quadrat_length / 2 + seq(0, Ly - quadrat_length, by = quadrat_length)
-          ) %>%
-          arrange(y, x)
-        
-        dens = 
-          bivariate.density(
-            ppp(gx, gy, xrange = c(0, Lx), yrange = c(0, Ly)), 
-            h0 = quadrat_length, 
-            xy = 
-              list(
-                x = evalpoints$x,
-                y = evalpoints$y
-              )
+  recruits = 
+    adults %>%
+    filter(census > 1) %>%
+    group_by(treeID) %>%
+    slice_min(census) %>%
+    ungroup %>%
+    mutate(recruit = TRUE)
+  
+  trees =
+    adults %>% 
+    left_join(
+      recruits, 
+      by = c('census', 'treeID', 'sp', 'gx', 'gy', 'dbh')
+    ) %>%
+    replace_na(list(recruit = FALSE))
+  
+  combined_data =
+    trees %>%
+    inner_join(
+      cluster_data, 
+      by = c('census', 'sp')
+    )
+  
+  reference =
+    combined_data %>%
+    inner_join(
+      combined_data %>%
+        select(census, d_cutoff, number_of_groups) %>%
+        unique() %>%
+        slice_max(number_of_groups, with_ties = FALSE)
+    ) %>%
+    count(group) %>%
+    mutate(reference = rev(rank(n))) %>%
+    full_join(
+      combined_data %>%
+        inner_join(
+          combined_data %>%
+            select(census, d_cutoff, number_of_groups) %>%
+            unique() %>%
+            slice_max(number_of_groups, with_ties = FALSE)
+        )
+    ) %>%
+    select(treeID, reference)
+
+  z_full = NULL
+  for(thecensus in sort(unique(combined_data$census))){
+
+    for(thed_cutoff in sort(unique(combined_data$d_cutoff))){
+
+      z = NULL
+
+      x =
+        combined_data %>%
+        filter(
+          census == thecensus,
+          d_cutoff == thed_cutoff
+        ) %>%
+        inner_join(
+          reference,
+          by = 'treeID'
+        ) %>%
+        count(
+          census,
+          d_cutoff,
+          group,
+          reference
+        ) %>%
+        mutate(group = factor(group)) %>%
+        complete(group, nesting(census, d_cutoff, reference)) %>%
+        replace_na(list(n = 0)) %>%
+        arrange(desc(n))
+
+      if(nrow(x) > 0){
+        z %<>%
+          bind_rows(
+            tibble(
+              census = thecensus,
+              d_cutoff = thed_cutoff,
+              group = x$group[1],
+              reference = x$reference[1]
+            )
           )
-        
-        evalpoints %>%
-          mutate(
-            density = as.numeric(t(dens$z$v))
-          ) %>%
-          return
+
+        for(i in 2:nrow(x)){
+
+          g = x$group[i]
+          r = x$reference[i]
+
+          if(!g %in% z$group & !r %in% z$reference){
+            z %<>%
+              bind_rows(
+                tibble(
+                  census = thecensus,
+                  d_cutoff = thed_cutoff,
+                  group = g,
+                  reference = r
+                )
+              )
+
+            z_full %<>%
+              bind_rows(z)
+          }
+        }
       }
-    
-    KDE = 
-      function(Census, Algorithm, Seed, D_cutoff, Group){
-        df = 
-          combined_data %>% 
-          filter(
-            census == Census,
-            algorithm == Algorithm,
-            seed == Seed,
-            d_cutoff == D_cutoff,
-            group == Group
-          ) %>%
-          select(gx, gy)
-        
-        result = 
-          KernelDensityEstimation(
-            gx = df$gx,
-            gy = df$gy
-          ) %>%
-          mutate(
-            census = Census,
-            algorithm = Algorithm,
-            seed = Seed,
-            d_cutoff = D_cutoff,
-            group = Group
-          ) %>%
-          return
-      }
-    
-    
-    kde_full = 
-      parms %>%
-      future_pmap_dfr(
-        .f = KDE,
-        .options = furrr_options(seed = TRUE)
-      )
-    
-    # kde_full = 
-    #   combined_data %>%
-    #   filter(
-    #     algorithm == 'louvain',
-    #     seed == 0
-    #   ) %>%
-    #   group_by(
-    #     algorithm,
-    #     seed,
-    #     d_cutoff,
-    #     group,
-    #     census
-    #   ) %>%
-    #   future_pmap_dfr(
-    #     .f = KernelDensityEstimation,
-    #     .options = furrr_options(seed = TRUE)
-    #   )
-    
-    
-    soiltype = 
-      kde_full %>%
-      group_by(algorithm, seed, d_cutoff, census, x, y) %>%
-      slice_max(density, n = 1) %>%
-      ungroup %>%
-      rename(soiltype = group) %>%
-      select(-density)
-    
-    kde_full %<>%
-      left_join(
-        soiltype,
-        by = c('x', 'y', 'census', 'algorithm', 'seed', 'd_cutoff')
-      ) %>% 
-      mutate(fdp = 'bci')
-    
-    saveRDS(kde_full, file = '~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
-    
-  }else{
-    kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
+    }
   }
+
+  z_full %<>%
+    unique()
+
+  combined_data_consistent =
+    combined_data %>%
+    left_join(z_full) %>%
+    mutate(group = reference) %>%
+    select(-reference)
+
+  cluster_data =
+    cluster_data %>%
+    inner_join(z_full) %>%
+    mutate(group = reference) %>%
+    select(-reference)
+
+
+  parms = 
+    combined_data_consistent %>%
+    select(
+      Census = census, 
+      Algorithm = algorithm,
+      Seed = seed,
+      D_cutoff = d_cutoff,
+      Group = group
+    ) %>%
+    unique %>%
+    filter(
+      Algorithm == 'louvain',
+      Seed == 0
+    )
+  
+  
+  KernelDensityEstimation = 
+    function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
+      
+      evalpoints =
+        expand_grid(
+          x = quadrat_length / 2 + seq(0, Lx - quadrat_length, by = quadrat_length),
+          y = quadrat_length / 2 + seq(0, Ly - quadrat_length, by = quadrat_length)
+        ) %>%
+        arrange(y, x)
+      
+      dens = 
+        bivariate.density(
+          ppp(gx, gy, xrange = c(0, Lx), yrange = c(0, Ly)), 
+          h0 = quadrat_length, 
+          xy = 
+            list(
+              x = evalpoints$x,
+              y = evalpoints$y
+            )
+        )
+      
+      evalpoints %>%
+        mutate(
+          density = as.numeric(t(dens$z$v))
+        ) %>%
+        return
+    }
+  
+  KDE = 
+    function(Census, Algorithm, Seed, D_cutoff, Group, .data){
+      df = 
+        .data %>% 
+        filter(
+          census == Census,
+          algorithm == Algorithm,
+          seed == Seed,
+          d_cutoff == D_cutoff,
+          group == Group
+        ) %>%
+        select(gx, gy) %>%
+        unique()
+      
+      result = 
+        KernelDensityEstimation(
+          gx = df$gx,
+          gy = df$gy
+        ) %>%
+        mutate(
+          census = Census,
+          algorithm = Algorithm,
+          seed = Seed,
+          d_cutoff = D_cutoff,
+          group = Group
+        ) %>%
+        return
+    }
+  
+  
+  kde_full = 
+    parms %>%
+    future_pmap_dfr(
+      .f = KDE,
+      .data = combined_data_consistent,
+      .options = furrr_options(seed = TRUE)
+    )
+  
+  soiltype = 
+    kde_full %>%
+    group_by(algorithm, seed, d_cutoff, census, x, y) %>%
+    slice_max(density, with_ties = FALSE) %>%
+    ungroup %>%
+    rename(soiltype = group) %>%
+    select(-density)
+  
+  kde_full %<>%
+    left_join(
+      soiltype,
+      by = c('x', 'y', 'census', 'algorithm', 'seed', 'd_cutoff')
+    ) %>% 
+    mutate(fdp = fdp)
+  
+  # saveRDS(kde_full, file = kde_filename)
+  
+  plot_soiltypes = 
+    kde_full %>% 
+    mutate(soiltype = factor(soiltype)) %>% 
+    ggplot(aes(x, y, fill = soiltype)) + 
+    geom_tile() + 
+    facet_grid(census ~ d_cutoff) + 
+    theme(aspect.ratio = ifelse(fdp == 'bci', .5, 1))
+  
+  plot_soiltypes %>%
+    show()
+  
   
   rec_df = 
     recruits %>%
     mutate(
-      x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
+      x = seq(10, L - 10, 20)[cut(gx, seq(20, L, 20), labels = FALSE)],
       y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
     ) %>%
     inner_join(
@@ -453,44 +672,58 @@ if(do.recruitment.analysis){
         rename(labelling_census = census)
     )
   
+  Pm_df = 
+    kde_full %>% 
+    select(x, y, d_cutoff, soiltype, census) %>% 
+    unique() %>% 
+    count(census, d_cutoff, soiltype) %>% 
+    mutate(Pm = n / (L * 500 / 20 ^ 2)) %>% 
+    ungroup() %>%
+    rename(labelling_census = census)
+  
   res =
     rec_df %>%
     group_by(
-      labelling_census, 
-      algorithm, 
-      seed, 
-      d_cutoff, 
-      fdp, 
-      weighted, 
-      autolinked_species_only,
-      self_loops,
-      d_step,
-      number_of_groups,
+      labelling_census,
+      d_cutoff,
       group
     ) %>%
     summarize(
       recruits = n(),
       matches = sum(group == soiltype),
-      nsoiltypes = unique(number_of_groups),
-      theta = (nsoiltypes - 1) / (recruits / matches - 1),
+      .groups = 'drop'
+    ) %>%
+    left_join(
+      Pm_df %>%
+        rename(group = soiltype)
+    ) %>%
+    mutate(
+      theta = ((1 - Pm) / Pm) / (recruits / matches - 1)
+    )
+  
+  res_summary = 
+    res %>%
+    group_by(labelling_census, d_cutoff) %>%
+    mutate(weight = recruits / sum(recruits)) %>%
+    summarize(
+      theta_mean = weighted.mean(theta, weight),
+      theta_se = sqrt(sum(weight * (theta - theta_mean) ^ 2)),
       .groups = 'drop'
     )
   
   res_summary = 
     res %>%
-    group_by(
-      d_cutoff, 
-      algorithm, 
-      seed, 
-      fdp, 
-      weighted, 
-      autolinked_species_only,
-      self_loops,
-      d_step,
-    ) %>%
+    group_by(labelling_census, d_cutoff) %>%
+    mutate(weight = recruits / sum(recruits)) %>%
     summarize(
-      theta_mean = mean(theta),
-      theta_se = sd(theta) / sqrt(n()),
+      theta_mean = weighted.mean(theta, weight),
+      theta_se = sqrt(sum(weight * (theta - theta_mean) ^ 2)),
+      .groups = 'drop'
+    ) %>%
+    group_by(d_cutoff) %>%
+    summarize(
+      theta_mean = mean(theta_mean),
+      theta_se = sqrt(sum(theta_se ^ 2)) / n(),
       .groups = 'drop'
     )
   
@@ -503,6 +736,7 @@ if(do.recruitment.analysis){
   plot_bars = 
     res_summary %>%
     ggplot(aes(d_cutoff, theta_mean)) +
+    geom_hline(yintercept = 1, color = 'grey') +
     geom_errorbar(
       aes(
         x = d_cutoff, 
@@ -512,7 +746,8 @@ if(do.recruitment.analysis){
     ) +
     geom_col(fill = 'plum4') +
     labs(x = 'Distance cutoff', y = 'Theta estimate') +
-    theme(aspect.ratio = 1)
+    theme(aspect.ratio = 1) +
+    scale_y_continuous(breaks = 0:6)
   
   plot_histograms %>%
     show()
@@ -529,22 +764,11 @@ if(do.nutrient.analysis){
   plan(multisession, workers = cores)
   
   if(do.data){
+    
     library(caret)
     library(C50)
     library(readxl)
-
-  if (fdp=='bci'){
-    nutrients = 
-      read_excel(
-        '~/SpatialNiche/Data/bci.block20.data-original.xls', 
-        sheet = 2
-      ) %>%
-      pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
-      group_by(nutrient) %>%
-      mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
-      ungroup
-  }
-
+    
     if (fdp=='bci'){
       nutrients = 
         read_excel(
@@ -555,14 +779,33 @@ if(do.nutrient.analysis){
         group_by(nutrient) %>%
         mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
         ungroup
+      
+      kde_full = readRDS(kde_filename)
     }
-
+    
+    if (fdp == 'lap') {
+      nutrients = 
+        read_excel(
+          '~/SpatialNiche/Data/LAP_nutrients/laplanada.dataJul05.xls',
+          sheet = 4
+        ) %>%
+        #move from left lower to center
+        mutate(gx = gx + 10, gy = gy + 10) %>%
+        pivot_longer(-c(gx, gy), names_to = 'nutrient') %>%
+        group_by(nutrient) %>%
+        rename(x = gx) %>%
+        rename(y = gy) %>%
+        mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+        ungroup
+      kde_full = readRDS(kde_filename)
+    }
+    
+    
     nutrients_wide = 
       nutrients %>%
       select(-value) %>%
       pivot_wider(names_from = nutrient, values_from = standardized)
     
-    kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
     
     kde = 
       kde_full %>%
@@ -598,7 +841,10 @@ if(do.nutrient.analysis){
               d_cutoff == D_cutoff,
               fdp == Fdp
             ) %>%
-            select(Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype) %>%
+            {if (fdp == 'bci') select(.,Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
+              else .} %>% 
+            {if (fdp == 'lap')select(.,Al, Ca, Cu, Fe, K, Mg, Mn, P, Zn, pH, soiltype)
+              else .}%>%
             mutate(soiltype = factor(soiltype, levels = unique(soiltype)))
           
           set.seed(Seed)
@@ -627,13 +873,12 @@ if(do.nutrient.analysis){
         }
       )
     
-    saveRDS(MLres, file = '~/SpatialNiche/Data/bci_C5_soiltype_vs_nutrients.rds')
+    saveRDS(MLres, file = paste0(save_directory, fdp, '_C5_soiltype_vs_nutrients.rds'))
     
-  }  
+  }
+  
   
   if(do.plots){
-    
-    MLres = readRDS('~/SpatialNiche/Data/bci_C5_soiltype_vs_nutrients.rds')
     
     MLres_summary = 
       MLres %>% 
@@ -658,17 +903,36 @@ if(do.nutrient.analysis){
       ggtitle('Soil nutrients VS inferred soil types')
     
     
-    nutrients = 
-      read_excel(
-        '~/SpatialNiche/Data/bci.block20.data-original.xls', 
-        sheet = 2
-      ) %>%
-      pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
-      group_by(nutrient) %>%
-      mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
-      ungroup
+    if (fdp=='bci'){
+      nutrients = 
+        read_excel(
+          nutrients_filename, 
+          sheet = 2
+        ) %>%
+        pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
+        group_by(nutrient) %>%
+        mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+        ungroup
+      
+      kde_full = readRDS(kde_filename)
+    }
     
-    kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
+    if (fdp == 'lap') {
+      nutrients = 
+        read_excel(
+          nutrients_filename,
+          sheet = 4
+        ) %>%
+        #move from left lower to center
+        mutate(gx = gx + 10, gy = gy + 10) %>%
+        pivot_longer(-c(gx, gy), names_to = 'nutrient') %>%
+        group_by(nutrient) %>%
+        rename(x = gx) %>%
+        rename(y = gy) %>%
+        mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+        ungroup
+      kde_full = readRDS(kde_filename)
+    }
     
     cor_analysis =
       nutrients %>%
@@ -758,12 +1022,10 @@ if(do.nutrient.analysis){
     
   }
   
-}
+}  
 
 if(do.trait.analysis){
   
-  
-  trait_data_raw = read_excel('~/BCI/BCITRAITS_20101220.xlsx')
   
   size_traits = 
     c(
@@ -913,21 +1175,36 @@ if(do.trait.analysis){
     mutate(pc1 = pc1 * cor_sign)
   
   ## Read cluster data and name groups by correlation with soil nutrients
-  cluster_data = 
-    readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
-    rename(sp = name) %>%
-    filter(
-      algorithm == 'louvain',
-      weighted == TRUE,
-      seed == 0
+  # cluster_data = 
+  #   readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
+  #   rename(sp = name) %>%
+  #   filter(
+  #     algorithm == 'louvain',
+  #     weighted == TRUE,
+  #     seed == 0
+  #   ) %>%
+  #   mutate(
+  #     group = 
+  #       factor(
+  #         group, 
+  #         levels = sort(unique(group))
+  #       )
+  #   )
+  
+ tbl = 
+   census_data %>%
+    filter(dbh >= 100) %>%
+    inner_join(cluster_data) %>%
+   mutate(
+     x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
+     y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
+   ) %>%
+    inner_join(
+      kde_full %>%
+        select(x, y, census, d_cutoff, soiltype, fdp) %>%
+        unique()
     ) %>%
-    mutate(
-      group = 
-        factor(
-          group, 
-          levels = sort(unique(group))
-        )
-    )
+   select(census, d_cutoff, sp, gx, gy, x, y, group, soiltype)
   
   nutrients = 
     read_excel(
@@ -938,8 +1215,6 @@ if(do.trait.analysis){
     group_by(nutrient) %>%
     mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
     ungroup
-  
-  kde_full = readRDS('~/SpatialNiche/Data/bci_inferred_soiltypes.rds')
   
   cor_analysis =
     nutrients %>%
@@ -997,10 +1272,12 @@ if(do.trait.analysis){
   
   data = 
     cluster_data %>%
-    inner_join(ranked_groups) %>%
-    inner_join(pca_data)
+    mutate(group = factor(group)) %>%
+    # inner_join(ranked_groups) %>%
+    inner_join(pca_data) %>%
+    rename(ranked_group = group)
   
-  dcut = 10
+  dcut = 20
   plot_violins = 
     data %>%
     filter(d_cutoff == dcut) %>%
@@ -1088,11 +1365,9 @@ if(do.trait.analysis){
     show
   
   if(!exists('combined_data')){
-    census_data = 
-      readRDS('c:/users/rdand/Google Drive/GitHub/Spatial-niche/Data/all_data.rds')
+    census_data = readRDS(census_filename)
     
-    cluster_data = 
-      readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
+    cluster_data = readRDS(cluster_filename) %>%
       rename(sp = name) %>%
       filter(
         algorithm == 'louvain',
