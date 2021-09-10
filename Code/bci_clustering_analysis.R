@@ -28,19 +28,17 @@ filter = dplyr::filter
 data_directory = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/'
 suffix = '?raw=true'
 
-census_filename = paste0(data_directory, fdp, '_census_data.rds', suffix)
-cluster_filename = paste0(data_directory, fdp, '_clustering_analysis.rds', suffix)
-kde_filename = paste0(data_directory, fdp, '_inferred_soiltypes.rds', suffix)
-soiltype_v_nutrients_filename = paste0(data_directory, fdp, '_C5_soiltype_vs_nutrients.rds', suffix)
-if(fdp == 'bci') nutrients_filename = paste0(data_directory, 'bci.block20.data-original.xls', suffix)
-if(fdp == 'lap') nutrients_filename = paste0(data_directory, 'laplanada.dataJul05.xls', suffix)
-traits_filename = paste0(data_directory, '~/BCI/BCITRAITS_20101220.xlsx', suffix) ## no trait data available for La Planada
+read_datafile = 
+  function(filename){
+    readRDS(url(paste0(data_directory, fdp, filename, suffix)))
+  }
 
-census_data = readRDS(census_filename)
-cluster_data = readRDS(cluster_filename)
-kde_full = readRDS(kde_filename)
-MLres = readRDS(soiltype_v_nutrients_filename)
-trait_data_raw = read_excel(traits_filename)
+census_data = read_datafile('_census_data.rds')
+cluster_data = read_datafile('_clustering_analysis.rds')
+kde_full = read_datafile('_inferred_soiltypes.rds')
+soiltype_v_nutrients = read_datafile('_C5_soiltype_vs_nutrients.rds')
+nutrients = read_datafile('_nutrient_data.rds')
+if(fdp == 'bci') trait_data_raw = read_datafile('_trait_data.rds')
 
 
 save_date = gsub('-', '', Sys.Date())
@@ -770,34 +768,22 @@ if(do.nutrient.analysis){
     library(readxl)
     
     if (fdp=='bci'){
-      nutrients = 
-        read_excel(
-          '~/SpatialNiche/Data/bci.block20.data-original.xls', 
-          sheet = 2
-        ) %>%
+      nutrients %<>%
         pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
         group_by(nutrient) %>%
         mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
         ungroup
-      
-      kde_full = readRDS(kde_filename)
     }
     
     if (fdp == 'lap') {
-      nutrients = 
-        read_excel(
-          '~/SpatialNiche/Data/LAP_nutrients/laplanada.dataJul05.xls',
-          sheet = 4
-        ) %>%
-        #move from left lower to center
-        mutate(gx = gx + 10, gy = gy + 10) %>%
+      nutrients %<>%
+        mutate(gx = gx + 10, gy = gy + 10) %>%  #move from left lower to center
         pivot_longer(-c(gx, gy), names_to = 'nutrient') %>%
         group_by(nutrient) %>%
         rename(x = gx) %>%
         rename(y = gy) %>%
         mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
         ungroup
-      kde_full = readRDS(kde_filename)
     }
     
     
@@ -827,7 +813,7 @@ if(do.nutrient.analysis){
       ) %>%
       unique()
     
-    MLres = 
+    soiltype_v_nutrients = 
       parms %>%
       future_pmap_dfr(
         .options = furrr_options(seed = TRUE),
@@ -873,15 +859,15 @@ if(do.nutrient.analysis){
         }
       )
     
-    saveRDS(MLres, file = paste0(save_directory, fdp, '_C5_soiltype_vs_nutrients.rds'))
+    saveRDS(soiltype_v_nutrients, file = paste0(save_directory, fdp, '_C5_soiltype_vs_nutrients.rds'))
     
   }
   
   
   if(do.plots){
     
-    MLres_summary = 
-      MLres %>% 
+    soiltype_v_nutrients_summary = 
+      soiltype_v_nutrients %>% 
       group_by(d_cutoff) %>% 
       summarize(
         mean = mean(Kappa), 
@@ -890,7 +876,7 @@ if(do.nutrient.analysis){
       )
     
     plot_bars = 
-      MLres_summary %>% 
+      soiltype_v_nutrients_summary %>% 
       ggplot(aes(d_cutoff, mean)) + 
       geom_errorbar(
         aes(x = d_cutoff, ymin = mean - 2 * se, ymax = mean + 2 * se), 
@@ -1191,57 +1177,133 @@ if(do.trait.analysis){
   #       )
   #   )
   
- tbl = 
+ nutrients %<>%
+   pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
+   group_by(nutrient) %>%
+   mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+   ungroup
+ 
+ all_data = 
    census_data %>%
-    filter(dbh >= 100) %>%
-    inner_join(cluster_data) %>%
+   filter(dbh >= 100) %>%
+   inner_join(cluster_data) %>%
    mutate(
      x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
      y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
    ) %>%
-    inner_join(
-      kde_full %>%
-        select(x, y, census, d_cutoff, soiltype, fdp) %>%
-        unique()
-    ) %>%
-   select(census, d_cutoff, sp, gx, gy, x, y, group, soiltype)
-  
-  nutrients = 
-    read_excel(
-      '~/SpatialNiche/Data/bci.block20.data-original.xls', 
-      sheet = 2
-    ) %>%
-    pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
-    group_by(nutrient) %>%
-    mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
-    ungroup
-  
-  cor_analysis =
-    nutrients %>%
-    select(x, y, nutrient, standardized) %>%
-    inner_join(
-      kde_full %>%
-        select(-soiltype) %>%
-        rename(soiltype = group), 
-      by = c('x', 'y')
-    ) %>%
-    group_by(
-      census, 
-      algorithm,
-      seed,
-      d_cutoff,
-      fdp,
-      nutrient,
-      soiltype
-    ) %>%
-    summarize(
-      cor = cor(density, standardized, use = 'complete.obs'), 
-      p.value = cor.test(density, standardized)$p.value, 
-      p.adj = p.adjust(p.value, method = 'hochberg'),
-      significant = (p.adj < .05),
-      cor_sig = ifelse(significant == TRUE, cor, NA),
-      .groups = 'drop'
+   inner_join(
+     kde_full %>%
+       select(x, y, census, d_cutoff, soiltype, fdp) %>%
+       unique()
+   ) %>%
+   filter(census == 7, d_cutoff == 20) %>%
+   inner_join(nutrients) %>%
+   select(census, d_cutoff, sp, gx, gy, x, y, group, soiltype, nutrient, standardized) %>%
+   inner_join(pca_data)
+ 
+ correlations = 
+   all_data |> 
+   group_by(trait_type, nutrient) |> 
+   summarize(
+     cor = cor(standardized, pc1), 
+     pval = cor.test(standardized, pc1)$p.value,
+     .groups = 'drop'
     ) 
+ 
+ cor_analysis =
+   nutrients %>%
+   select(x, y, nutrient, standardized) %>%
+   inner_join(
+     kde_full %>%
+       select(-soiltype) %>%
+       rename(soiltype = group), 
+     by = c('x', 'y')
+   ) %>%
+   group_by(
+     census, 
+     algorithm,
+     seed,
+     d_cutoff,
+     fdp,
+     nutrient,
+     soiltype
+   ) %>%
+   summarize(
+     cor = cor(density, standardized, use = 'complete.obs'), 
+     p.value = cor.test(density, standardized)$p.value, 
+     p.adj = p.adjust(p.value, method = 'hochberg'),
+     significant = (p.adj < .05),
+     cor_sig = ifelse(significant == TRUE, cor, NA),
+     .groups = 'drop'
+   ) 
+ 
+ mean_correlation = 
+   cor_analysis |> 
+   filter(census == 7, d_cutoff == 20, !nutrient %in% c('Al', 'pH')) |> 
+   group_by(soiltype) |> 
+   summarize(mean_cor = mean(cor), .groups = 'drop') |>
+   mutate(
+     group_ID = 
+       factor(
+         soiltype, 
+         levels = soiltype[order(mean_cor, decreasing = TRUE)]
+       )
+   )
+ 
+ all_data %<>%
+   inner_join(
+     mean_correlation |>
+       select(group = soiltype, group_ID)
+   )
+ 
+ cor_analysis %<>%
+   inner_join(
+     mean_correlation |>
+       select(soiltype, group_ID)
+   )  
+ 
+ 
+ plot_correlations = 
+   correlations |> 
+   filter(pval <= .05) |>
+   ggplot(aes(trait_type, nutrient, fill = cor)) + 
+   geom_tile() + 
+   scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
+ 
+ plot_correlations |>
+   show()
+ 
+ plot_group_densities = 
+   all_data |> 
+   filter(trait_type == 'vital', nutrient == 'Fe') |> 
+   ggplot(aes(gx, gy)) + 
+   geom_density_2d_filled() + 
+   theme(aspect.ratio = .5) + 
+   facet_wrap(~ group_ID)
+ 
+ plot_trait_violins_trees = 
+   all_data |> 
+   filter(nutrient == 'Fe') |> 
+   ggplot(aes(group_ID, pc1, fill = group_ID)) + 
+   geom_violin(draw_quantiles = .5) + 
+   facet_wrap(~ trait_type)
+ 
+ plot_trait_violins_species = 
+   all_data |> 
+   filter(nutrient == 'Fe') |> 
+   select(sp, group_ID, pc1, trait_type) |>
+   unique() |>
+   ggplot(aes(group_ID, pc1, fill = group_ID)) + 
+   geom_violin(draw_quantiles = .5) + 
+   facet_wrap(~ trait_type)
+   
+  plot_group_nutrient_correlations = 
+    cor_analysis |> 
+    filter(census == 7, d_cutoff == 20) |> 
+    ggplot(aes(nutrient, cor, fill = group_ID)) + 
+    geom_col() + 
+    facet_wrap(~ group_ID)
+  
   
   ranked_groups = 
     cor_analysis %>%
@@ -1440,6 +1502,33 @@ if(do.trait.analysis){
   
 }  
 
+if(do.C5.trait.analysis){
+  
+  dtf =
+    all_data %>% 
+    select(sp, trait_type, pc1, group_ID) %>% 
+    unique %>% 
+    pivot_wider(names_from = trait_type, values_from = pc1) %>%
+    arrange(sp) %>%
+    select(-sp)
+  
+  abundances =
+    all_data %>% 
+    select(sp, gx, gy) %>% 
+    unique() %>%
+    count(sp)
+  
+  C5_model_trait = 
+    train(
+      group_ID ~ ., 
+      data = dtf, 
+      method = 'C5.0',
+      na.action = na.pass,
+      trControl = trainControl(method = 'repeatedcv', repeats = 10),
+      metric = 'Kappa'
+    )
+  
+}
 
 ## ============ OLD CODE ============
 
