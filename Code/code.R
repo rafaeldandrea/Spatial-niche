@@ -17,10 +17,11 @@ theme_update(
 do.clustering.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
-do.trait.analysis = 1
+do.trait.analysis = 0
+do.paper.figures = 1
 
 do.data = 0
-do.plots = 1
+do.plots = 0
 fdp = 'bci'
 
 filter = dplyr::filter
@@ -58,7 +59,7 @@ if(do.clustering.analysis){
     save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
     
     source('https://github.com/rafaeldandrea/Spatial-niche/raw/Lap/Code/clustering_functions.R')
-  
+    
     if(fdp == 'bci'){
       Lx = 1000
       bci =
@@ -96,7 +97,7 @@ if(do.clustering.analysis){
       parameters %<>%
         filter(algorithm == 'louvain', seed == 0)  
     }
-      
+    
     
     chunk_size = cores
     
@@ -161,7 +162,7 @@ if(do.clustering.analysis){
       
       dir.create(save_directory, showWarnings = FALSE)
       
-
+      
       if(file.exists(filename)){
         fdp_analyzed = 
           readRDS(filename) %>%
@@ -453,14 +454,14 @@ if(do.recruitment.analysis){
         )
     ) %>%
     select(treeID, reference)
-
+  
   z_full = NULL
   for(thecensus in sort(unique(combined_data$census))){
-
+    
     for(thed_cutoff in sort(unique(combined_data$d_cutoff))){
-
+      
       z = NULL
-
+      
       x =
         combined_data %>%
         filter(
@@ -481,7 +482,7 @@ if(do.recruitment.analysis){
         complete(group, nesting(census, d_cutoff, reference)) %>%
         replace_na(list(n = 0)) %>%
         arrange(desc(n))
-
+      
       if(nrow(x) > 0){
         z %<>%
           bind_rows(
@@ -492,12 +493,12 @@ if(do.recruitment.analysis){
               reference = x$reference[1]
             )
           )
-
+        
         for(i in 2:nrow(x)){
-
+          
           g = x$group[i]
           r = x$reference[i]
-
+          
           if(!g %in% z$group & !r %in% z$reference){
             z %<>%
               bind_rows(
@@ -508,7 +509,7 @@ if(do.recruitment.analysis){
                   reference = r
                 )
               )
-
+            
             z_full %<>%
               bind_rows(z)
           }
@@ -516,23 +517,23 @@ if(do.recruitment.analysis){
       }
     }
   }
-
+  
   z_full %<>%
     unique()
-
+  
   combined_data_consistent =
     combined_data %>%
     left_join(z_full) %>%
     mutate(group = reference) %>%
     select(-reference)
-
+  
   cluster_data =
     cluster_data %>%
     inner_join(z_full) %>%
     mutate(group = reference) %>%
     select(-reference)
-
-
+  
+  
   parms = 
     combined_data_consistent %>%
     select(
@@ -1160,353 +1161,98 @@ if(do.trait.analysis){
     inner_join(pc1_sign) %>%
     mutate(pc1 = pc1 * cor_sign)
   
-  ## Read cluster data and name groups by correlation with soil nutrients
-  # cluster_data = 
-  #   readRDS('~/SpatialNiche/Data/20210722/bci_clustering_analysis.rds') %>%
-  #   rename(sp = name) %>%
-  #   filter(
-  #     algorithm == 'louvain',
-  #     weighted == TRUE,
-  #     seed == 0
-  #   ) %>%
-  #   mutate(
-  #     group = 
-  #       factor(
-  #         group, 
-  #         levels = sort(unique(group))
-  #       )
-  #   )
+  nutrients %<>%
+    pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
+    group_by(nutrient) %>%
+    mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+    ungroup
   
- nutrients %<>%
-   pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
-   group_by(nutrient) %>%
-   mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
-   ungroup
- 
- all_data = 
-   census_data %>%
-   filter(dbh >= 100) %>%
-   inner_join(cluster_data) %>%
-   mutate(
-     x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
-     y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
-   ) %>%
-   inner_join(
-     kde_full %>%
-       select(x, y, census, d_cutoff, soiltype, fdp) %>%
-       unique()
-   ) %>%
-   filter(census == 7, d_cutoff == 20) %>%
-   inner_join(nutrients) %>%
-   select(census, d_cutoff, sp, gx, gy, x, y, group, soiltype, nutrient, standardized) %>%
-   inner_join(pca_data)
- 
- correlations = 
-   all_data |> 
-   group_by(trait_type, nutrient) |> 
-   summarize(
-     cor = cor(standardized, pc1), 
-     pval = cor.test(standardized, pc1)$p.value,
-     .groups = 'drop'
-    ) 
- 
- cor_analysis =
-   nutrients %>%
-   select(x, y, nutrient, standardized) %>%
-   inner_join(
-     kde_full %>%
-       select(-soiltype) %>%
-       rename(soiltype = group), 
-     by = c('x', 'y')
-   ) %>%
-   group_by(
-     census, 
-     algorithm,
-     seed,
-     d_cutoff,
-     fdp,
-     nutrient,
-     soiltype
-   ) %>%
-   summarize(
-     cor = cor(density, standardized, use = 'complete.obs'), 
-     p.value = cor.test(density, standardized)$p.value, 
-     p.adj = p.adjust(p.value, method = 'hochberg'),
-     significant = (p.adj < .05),
-     cor_sig = ifelse(significant == TRUE, cor, NA),
-     .groups = 'drop'
-   ) 
- 
- mean_correlation = 
-   cor_analysis |> 
-   filter(census == 7, d_cutoff == 20, !nutrient %in% c('Al', 'pH')) |> 
-   group_by(soiltype) |> 
-   summarize(mean_cor = mean(cor), .groups = 'drop') |>
-   mutate(
-     group_ID = 
-       factor(
-         soiltype, 
-         levels = soiltype[order(mean_cor, decreasing = TRUE)]
-       )
-   )
- 
- all_data %<>%
-   inner_join(
-     mean_correlation |>
-       select(group = soiltype, group_ID)
-   )
- 
- cor_analysis %<>%
-   inner_join(
-     mean_correlation |>
-       select(soiltype, group_ID)
-   )  
- 
- 
- plot_correlations = 
-   correlations |> 
-   filter(pval <= .05) |>
-   ggplot(aes(trait_type, nutrient, fill = cor)) + 
-   geom_tile() + 
-   scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
- 
- plot_correlations |>
-   show()
- 
- plot_group_densities = 
-   all_data |> 
-   filter(trait_type == 'vital', nutrient == 'Fe') |> 
-   ggplot(aes(gx, gy)) + 
-   geom_density_2d_filled() + 
-   theme(aspect.ratio = .5) + 
-   facet_wrap(~ group_ID)
- 
- plot_trait_violins_trees = 
-   all_data |> 
-   filter(nutrient == 'Fe') |> 
-   ggplot(aes(group_ID, pc1, fill = group_ID)) + 
-   geom_violin(draw_quantiles = .5) + 
-   facet_wrap(~ trait_type)
- 
- plot_trait_violins_species = 
-   all_data |> 
-   filter(nutrient == 'Fe') |> 
-   select(sp, group_ID, pc1, trait_type) |>
-   unique() |>
-   ggplot(aes(group_ID, pc1, fill = group_ID)) + 
-   geom_violin(draw_quantiles = .5) + 
-   facet_wrap(~ trait_type)
-   
-  plot_group_nutrient_correlations = 
-    cor_analysis |> 
-    filter(census == 7, d_cutoff == 20) |> 
-    ggplot(aes(nutrient, cor, fill = group_ID)) + 
-    geom_col() + 
-    facet_wrap(~ group_ID)
-  
-  
-  ranked_groups = 
-    cor_analysis %>%
-    group_by(
-      algorithm,
-      seed,
-      fdp,
-      d_cutoff,
-      census,
-      soiltype
-    ) %>%
-    summarize(
-      order = -mean(cor),
-      .groups = 'drop'
-    ) %>%
-    group_by(
-      algorithm,
-      seed,
-      fdp,
-      d_cutoff,
-      census
-    ) %>%
-    mutate(
-      ranked_group = factor(rank(order))
-    ) %>%
-    ungroup() %>%
-    rename(group = soiltype)
-  
-  data = 
-    cluster_data %>%
-    mutate(group = factor(group)) %>%
-    # inner_join(ranked_groups) %>%
-    inner_join(pca_data) %>%
-    rename(ranked_group = group)
-  
-  dcut = 20
-  plot_violins = 
-    data %>%
-    filter(d_cutoff == dcut) %>%
-    ggplot(aes(ranked_group, pc1, group = ranked_group, fill = ranked_group)) +
-    geom_violin() + 
-    facet_grid(trait_type ~ census, labeller = label_both) +
-    theme(legend.position = 'none') +
-    ggtitle(paste0('Distance cutoff = ', dcut))
-  
-  plot_violins %>%
-    show
-  
-  PairwiseWilcox = function(pc1, ranked_group, ...){
-    
-    test = pairwise.wilcox.test(pc1, ranked_group)
-    
-    p.value = test$p.value
-    
-    pairs = 
-      expand_grid(
-        rn = as.numeric(rownames(p.value)), 
-        cn = as.numeric(colnames(p.value))
-      ) %>% 
-      filter(rn > cn) %>% 
-      arrange(cn, rn) %>%
-      mutate(name = paste0(rn, cn)) %>% 
-      pull(name)
-    
-    tibble(
-      pair = pairs, 
-      p.value = as.numeric(p.value[!is.na(p.value)])
-    ) %>%
-      return()
-  }
-  
-  parms = 
-    data %>%
-    select(
-      census,
-      d_cutoff,
-      algorithm,
-      weighted,
-      self_loops,
-      number_of_groups,
-      autolinked_species_only,
-      d_step,
-      trait_type
-    ) %>%
-    unique()
-  
-  pairwise = NULL
-  for(i in seq(nrow(parms))){
-    suppressMessages(
-      foo <- 
-        with(data %>% inner_join(parms[i, ]), PairwiseWilcox(pc1, ranked_group)) %>%
-        bind_cols(parms[i, ])
-    )
-    
-    pairwise = rbind(pairwise, foo)
-  }
-  
-  pairwise %<>%
-    mutate(significant = p.value < .05)
-  
-  plot_intergroup_significance = 
-    pairwise %>% 
-    group_by(d_cutoff) %>% 
-    summarize(
-      sig = 100 * mean(significant), 
-      .groups = 'drop'
-    ) %>% 
-    ggplot(aes(d_cutoff, sig)) + 
-    geom_point() + 
-    geom_line() +
-    labs(
-      x = 'Distance cutoff', 
-      y = 'Percentage of significantly different groups'
-    ) +
-    ggtitle('t-test: traits of inferred niches') +
-    theme(aspect.ratio = 1) +
-    geom_hline(yintercept = 5, col = 'red')
-  
-  plot_intergroup_significance %>%
-    show
-  
-  if(!exists('combined_data')){
-    census_data = readRDS(census_filename)
-    
-    cluster_data = readRDS(cluster_filename) %>%
-      rename(sp = name) %>%
-      filter(
-        algorithm == 'louvain',
-        weighted == TRUE,
-        seed == 0
-      ) %>%
-      mutate(
-        group = 
-          factor(
-            group, 
-            levels = sort(unique(group))
-          )
-      )
-    
-    adults = 
-      census_data %>%
-      filter(dbh >= 100) %>%
-      select(census, treeID, sp, gx, gy, dbh)
-    
-    recruits = 
-      adults %>%
-      filter(census > 1) %>%
-      group_by(treeID) %>%
-      slice_min(census) %>%
-      ungroup %>%
-      mutate(recruit = TRUE)
-    
-    trees =
-      adults %>% 
-      left_join(
-        recruits, 
-        by = c('census', 'treeID', 'sp', 'gx', 'gy', 'dbh')
-      ) %>%
-      replace_na(list(recruit = FALSE))
-    
-    combined_data =
-      trees %>%
-      inner_join(
-        cluster_data, 
-        by = c('census', 'sp')
-      )
-    
-    parms = 
-      combined_data %>%
-      select(
-        Census = census, 
-        Algorithm = algorithm,
-        Seed = seed,
-        D_cutoff = d_cutoff,
-        Group = group
-      ) %>%
-      unique %>%
-      filter(
-        Algorithm == 'louvain',
-        Seed == 0
-      )
-  }
-  
-  
-  y = 
-    combined_data %>%
+  all_data = 
+    census_data %>%
+    filter(dbh >= 100) %>%
+    inner_join(cluster_data) %>%
     mutate(
       x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
       y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
     ) %>%
-    inner_join(data) %>%
-    inner_join(nutrients)
+    inner_join(
+      kde_full %>%
+        select(x, y, census, d_cutoff, soiltype, fdp) %>%
+        unique()
+    ) %>%
+    filter(census == 7, d_cutoff == 20) %>%
+    inner_join(nutrients) %>%
+    select(census, d_cutoff, sp, gx, gy, x, y, group, soiltype, nutrient, standardized) %>%
+    inner_join(pca_data)
   
+  correlations = 
+    all_data |> 
+    group_by(trait_type, nutrient) |> 
+    summarize(
+      cor = cor(standardized, pc1), 
+      pval = cor.test(standardized, pc1)$p.value,
+      .groups = 'drop'
+    ) 
   
+  cor_analysis =
+    nutrients %>%
+    select(x, y, nutrient, standardized) %>%
+    inner_join(
+      kde_full %>%
+        select(-soiltype) %>%
+        rename(soiltype = group), 
+      by = c('x', 'y')
+    ) %>%
+    group_by(
+      census, 
+      algorithm,
+      seed,
+      d_cutoff,
+      fdp,
+      nutrient,
+      soiltype
+    ) %>%
+    summarize(
+      cor = cor(density, standardized, use = 'complete.obs'), 
+      p.value = cor.test(density, standardized)$p.value, 
+      p.adj = p.adjust(p.value, method = 'hochberg'),
+      significant = (p.adj < .05),
+      cor_sig = ifelse(significant == TRUE, cor, NA),
+      .groups = 'drop'
+    ) 
   
-}  
-
-if(do.C5.trait.analysis){
+  mean_correlation = 
+    cor_analysis |> 
+    filter(census == 7, d_cutoff == 20, !nutrient %in% c('Al', 'pH')) |> 
+    group_by(soiltype) |> 
+    summarize(mean_cor = mean(cor), .groups = 'drop') |>
+    mutate(
+      group_ID = 
+        factor(
+          soiltype, 
+          levels = soiltype[order(mean_cor, decreasing = TRUE)]
+        )
+    )
   
-  dtf =
+  all_data %<>%
+    inner_join(
+      mean_correlation |>
+        select(group = soiltype, group_ID)
+    )
+  
+  cor_analysis %<>%
+    inner_join(
+      mean_correlation |>
+        select(soiltype, group_ID)
+    )  
+  
+  species_group_v_trait =
     all_data %>% 
     select(sp, trait_type, pc1, group_ID) %>% 
-    unique %>% 
+    unique 
+  
+  species_group_v_trait_wide = 
+    species_group_v_trait %>% 
     pivot_wider(names_from = trait_type, values_from = pc1) %>%
     arrange(sp)
   
@@ -1516,18 +1262,91 @@ if(do.C5.trait.analysis){
     unique() %>%
     count(sp)
   
-  C5_model_trait = 
-    train(
-      group_ID ~ ., 
-      data = dtf, 
-      method = 'C5.0',
-      na.action = na.pass,
-      trControl = trainControl(method = 'repeatedcv', repeats = 10),
-      metric = 'Kappa'
+  group_levels = 
+    species_group_v_trait %>% 
+    pull(group_ID) %>% 
+    levels()
+  
+  
+  
+  plot_correlations = 
+    correlations |> 
+    filter(pval <= .05) |>
+    ggplot(aes(trait_type, nutrient, fill = cor)) + 
+    geom_tile() + 
+    scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
+  
+  plot_correlations |>
+    show()
+  
+  plot_group_densities = 
+    all_data |> 
+    filter(trait_type == 'vital', nutrient == 'Fe') |> 
+    ggplot(aes(gx, gy)) + 
+    geom_density_2d_filled() + 
+    theme(aspect.ratio = .5) + 
+    facet_wrap(~ group_ID)
+  
+  plot_trait_violins_trees = 
+    all_data |> 
+    filter(nutrient == 'Fe') |> 
+    ggplot(aes(group_ID, pc1, fill = group_ID)) + 
+    geom_violin(draw_quantiles = .5) + 
+    facet_wrap(~ trait_type)
+  
+  plot_trait_violins_species = 
+    all_data |> 
+    filter(nutrient == 'Fe') |> 
+    select(sp, group_ID, pc1, trait_type) |>
+    unique() |>
+    ggplot(aes(group_ID, pc1, fill = group_ID)) + 
+    geom_violin(draw_quantiles = .5) + 
+    facet_wrap(~ trait_type)
+  
+  plot_group_nutrient_correlations = 
+    cor_analysis |> 
+    filter(census == 7, d_cutoff == 20) |> 
+    ggplot(aes(nutrient, cor, fill = group_ID)) + 
+    geom_col() + 
+    facet_wrap(~ group_ID)
+  
+  plot_trait_space = 
+    species_group_v_trait_wide %>%
+    ggplot(aes(vital, wood, color = group_ID)) +
+    geom_point(size = 4) +
+    theme(aspect.ratio = 1)
+  
+  
+  table = 
+    species_group_v_trait %>%
+    filter(trait_type %in% c('vital', 'wood', 'leaf')) %>%
+    group_by(trait_type) %>% 
+    summarize(
+      group_ID_x = rep(group_levels[-1], 3),
+      group_ID_y = rep(group_levels[-length(group_levels)], each = 3),
+      pval = as.numeric(pairwise.wilcox.test(pc1, group_ID)$p.value),
+      .groups = 'drop'
     )
+
+  
+  
+}  
+
+if(do.paper.figures){
+  
+  fdp = 'bci'
+  
+  census_data = read_datafile('_census_data.rds')
+  cluster_data = read_datafile('_clustering_analysis.rds')
+  kde_full = read_datafile('_inferred_soiltypes.rds')
+  soiltype_v_nutrients = read_datafile('_C5_soiltype_vs_nutrients.rds')
+  nutrients = read_datafile('_nutrient_data.rds')
+  if(fdp == 'bci') trait_data_raw = read_datafile('_trait_data.rds')
+  
+  ## Figure 1. 1.	A. Geographic location of trees; B. Adjacency matrix; C. Species network.
+  
   
 }
-
 ## ============ OLD CODE ============
 
 if(FALSE){
@@ -1614,7 +1433,8 @@ if(FALSE){
   
 }
 
-## I ended up not using this function
+## I ended up not using this function, written for the recruitment test 
+## where I find theta as a function of d_cutoff
 bayes = 
   function(
     matches, 
@@ -1659,3 +1479,37 @@ bayes =
     
     return(df)
   }
+
+
+## Using C5.0 on traits returns a Cohen's Kappa of 0.2 for BCI census = 7, d_cutoff = 20
+## If abundance-weighing, Kappa becomes 1, presumably because the classifier learns to 
+## find each species based on their traits
+if(FALSE){
+  if(do.C5.trait.analysis){
+    
+    dtf =
+      all_data %>% 
+      select(sp, trait_type, pc1, group_ID) %>% 
+      unique %>% 
+      pivot_wider(names_from = trait_type, values_from = pc1) %>%
+      arrange(sp)
+    
+    abundances =
+      all_data %>% 
+      select(sp, gx, gy) %>% 
+      unique() %>%
+      count(sp)
+    
+    C5_model_trait = 
+      train(
+        group_ID ~ ., 
+        data = dtf, 
+        method = 'C5.0',
+        na.action = na.pass,
+        trControl = trainControl(method = 'repeatedcv', repeats = 10),
+        metric = 'Kappa'
+      )
+    
+  }
+  
+}
