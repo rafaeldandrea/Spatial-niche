@@ -1334,19 +1334,319 @@ if(do.trait.analysis){
 
 if(do.paper.figures){
   
-  fdp = 'bci'
+  do.fig1 = 1
+  do.fig2 = 1
+  do.fig3 = 1
   
-  census_data = read_datafile('_census_data.rds')
-  cluster_data = read_datafile('_clustering_analysis.rds')
-  kde_full = read_datafile('_inferred_soiltypes.rds')
-  soiltype_v_nutrients = read_datafile('_C5_soiltype_vs_nutrients.rds')
-  nutrients = read_datafile('_nutrient_data.rds')
-  if(fdp == 'bci') trait_data_raw = read_datafile('_trait_data.rds')
+  selection = tibble(census = 7, d_cutoff = 20)
   
-  ## Figure 1. 1.	A. Geographic location of trees; B. Adjacency matrix; C. Species network.
+  plotting_colors = 
+    c(
+      red = "#DD5144", 
+      green = "#1DA462", 
+      blue = "#4C8BF5", 
+      yellow = "#FFCD46"
+    )
+  
+  group_levels =
+    nutrients %>%
+    pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
+    group_by(nutrient) %>%
+    mutate(standardized = (value - min(value)) / (max(value) - min(value))) %>%
+    ungroup %>%
+    select(x, y, nutrient, standardized) %>%
+    inner_join(
+      kde_full %>%
+        inner_join(selection) %>%
+        select(-soiltype) %>%
+        rename(soiltype = group), 
+      by = c('x', 'y')
+    ) %>%
+    group_by(
+      nutrient,
+      soiltype
+    ) %>%
+    summarize(
+      cor = cor(density, standardized, use = 'complete.obs'), 
+      .groups = 'drop'
+    ) |> 
+    filter(!nutrient %in% c('Al', 'pH')) |> 
+    group_by(soiltype) |> 
+    summarize(mean_cor = mean(cor), .groups = 'drop') |>
+    mutate(
+      group_ID = 
+        factor(
+          soiltype, 
+          levels = soiltype[order(mean_cor, decreasing = TRUE)]
+        )
+    )
+  
+  data = 
+    'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_figure_data.rds?raw=true' %>%
+    url() %>%
+    readRDS() %>%
+    mutate(group = factor(group, levels = levels(group_levels$group_ID)))
+  
+  species_names = 
+    '~/BCI/BCITRAITS_20101220.xlsx' %>%
+    readxl::read_excel() %>%
+    mutate(
+      sp = tolower(`SP$`),
+      genus = substr(`GENUS$`, start = 1, stop = 1),
+      genus = paste0(genus, '.'),
+      species = `SPECIES$`,
+      name = paste(genus, species)
+    ) %>%
+    select(sp, name) %>%
+    mutate(name = ifelse(sp == 'swars1', 'S. simplex_var1', name)) %>%
+    mutate(name = ifelse(sp == 'swars2', 'S. simplex_var2', name))
+  
+  species_by_group = 
+    cluster_data %>%
+    inner_join(selection) %>%
+    select(sp1 = sp, group) %>%
+    mutate(
+      group = factor(group, levels = levels(group_levels$group_ID)),
+      sp1 = factor(sp1, levels = sp1[order(group)])
+    )
   
   
+  
+  if(do.fig1){
+    ## Figure 1A. Geographic location of trees
+    dtf1a = 
+      census_data %>%
+      select(sp, gx, gy, dbh) %>%
+      filter(dbh >= 100) %>%
+      inner_join(
+        cluster_data %>%
+          inner_join(selection) %>%
+          select(sp, group)
+      ) %>%
+      mutate(
+        group = factor(group, levels = levels(group_levels$group_ID))
+      ) %>%
+      drop_na()
+    
+    fig1a = 
+      dtf1a %>%
+      ggplot(aes(gx, gy, color = group)) +
+      geom_point() +
+      theme(aspect.ratio = .5) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)') +
+      scale_color_manual(
+        breaks = unique(dtf1a$group), 
+        values = as.character(plotting_colors)
+      ) +
+      theme(legend.position = 'none')
+    
+    
+    ## Figure 1B. Adjacency matrix
+    source('~/SpatialNiche/R_Scripts/clustering_functions.R')
+    
+    adjacency_tibble =
+      census_data %>%
+      filter(dbh >= 100)%>%
+      inner_join(selection) %>%
+      adjacency_matrix(
+        autolinked_species_only = TRUE, 
+        d_cutoff = selection$d_cutoff, 
+        d_step = 1e-5, 
+        Lx = 1000, 
+        Ly = 500
+      ) %>%
+      pluck('adjacency') %>%
+      inner_join(species_by_group) %>%
+      mutate(
+        sp1 = factor(sp1, levels = levels(species_by_group$sp1)),
+        sp2 = factor(sp2, levels = levels(species_by_group$sp1)),
+        binary = factor(binary, levels = c(0, 1))
+      )
+    
+    plotted_names = 
+      species_names %>%
+      right_join(
+        species_by_group %>% 
+          rename(sp = sp1)
+      ) %>%
+      replace_na(list(name = 'T. integerrima')) %>%
+      arrange(name) %>%
+      mutate(name = factor(name, levels = name[order(group)])) %>%
+      arrange(name)
+    
+    fig1b = 
+      adjacency_tibble %>%
+      ggplot(aes(sp1, sp2, fill = binary)) +
+      geom_tile() +
+      theme(aspect.ratio = 1) +
+      labs(x = '', y = 'species') +
+      theme(legend.position = 'none') +
+      scale_fill_manual(values = c('white', 'black')) +
+      theme(axis.text.x = element_blank()) +
+      scale_y_discrete(labels = plotted_names$name) +
+      theme(axis.text.y = element_text(color = plotting_colors[plotted_names$group]))
+    
+    fig1 = cowplot::plot_grid(fig1a, fig1b, labels = 'AUTO')
+  }
+  
+  if(do.fig2){
+    
+    fig2a = 
+      data %>%
+      filter(trait_type == 'vital', nutrient == 'Al') %>%
+      select(gx, gy, group) %>%
+      mutate(group_name = names(plotting_colors[group])) %>%
+      mutate(
+        group_name = 
+          factor(
+            group_name, 
+            levels = unique(group_name[order(group)])
+          )
+      ) %>%
+      ggplot(aes(gx, gy)) +
+      geom_density_2d_filled() +
+      facet_wrap(~group_name) +
+      theme(
+        aspect.ratio = .5,
+        legend.position = 'drop'
+      ) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
+    
+    dtf2b = 
+      kde_full %>%
+      inner_join(selection) %>%
+      select(x, y, soiltype) %>%
+      unique() %>%
+      mutate(
+        soiltype = 
+          factor(
+            soiltype, 
+            levels = levels(group_levels$group_ID)
+          )
+      ) %>%
+      arrange(soiltype)
+    
+    fig2b = 
+      dtf2b %>%
+      ggplot(aes(x, y, fill = soiltype)) +
+      geom_tile() +
+      scale_fill_manual(
+        breaks = unique(dtf2b$soiltype), 
+        values = as.character(plotting_colors)
+      ) +
+      theme(
+        legend.position = 'none',
+        aspect.ratio = .5
+      ) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
+    
+    fig2c = 
+      data %>%
+      filter(trait_type == 'vital') %>%
+      ggplot(aes(x, y, fill = standardized)) +
+      geom_tile() +
+      facet_wrap(~nutrient, nrow = 3) +
+      scale_fill_gradientn(colors = terrain.colors(1000)) +
+      theme(
+        aspect.ratio = .5, 
+        legend.position = 'none'
+      ) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
+    
+    fig2 = cowplot::plot_grid(fig2a, fig2b, fig2c, labels = 'AUTO', rel_widths = c(1, 2), byrow = FALSE)
+      
+  }
+  
+  if(do.fig3){
+    
+    dtf3a = 
+      data %>%
+      filter(trait_type == 'vital') %>%
+      select(x, y, nutrient, standardized) %>%
+      unique() %>%
+      pivot_wider(names_from = nutrient, values_from = standardized)
+    
+    pca_model = 
+      dtf3a %>%
+      select(-c(x, y)) %>%
+      pca(method = 'ppca', scale = 'none', center = FALSE)
+    
+    dtf3a %<>%
+      bind_cols(
+        pc1 = pca_model@scores[, 1],
+        pc2 = pca_model@scores[, 2]
+      ) %>%
+      inner_join(
+        kde_full %>%
+          inner_join(selection) %>%
+          select(x, y, soiltype) %>%
+          unique() %>%
+          mutate(
+            soiltype = 
+              factor(
+                soiltype, 
+                levels = levels(group_levels$group_ID)
+              )
+          ) %>%
+          arrange(soiltype)
+      ) %>%
+      arrange(soiltype)
+    
+    fig3a = 
+      dtf3a %>%
+      ggplot(aes(pc1, pc2, color = soiltype)) +
+      geom_point() +
+      theme(
+        aspect.ratio = 1,
+        legend.position = 'none'
+      ) +
+      scale_color_manual(
+        breaks = unique(dtf3a$soiltype), 
+        values = as.character(plotting_colors)
+      ) +
+      labs(x = 'nutrient PC1', y = 'nutrient PC2')
+    
+    dtf3b = 
+      kde_full %>%
+      inner_join(selection) %>%
+      mutate(group = factor(group, levels = levels(group_levels$group_ID))) %>%
+      inner_join(
+        data %>%
+          filter(trait_type == 'vital')
+      ) %>%
+      group_by(group, nutrient) %>%
+      summarize(
+        correlation = cor(density, standardized),
+        p.value = cor.test(density, standardized)$p.value,
+        signif = p.value <= .05,
+        .groups = 'drop'
+      ) %>%
+      arrange(group) %>%
+      mutate(group_name = names(plotting_colors[group])) %>%
+      mutate(
+        group_name = 
+          factor(
+            group_name, 
+            levels = unique(group_name[order(group)])
+          )
+      )
+    
+    fig3b = 
+      dtf3b %>%
+      ggplot(aes(nutrient, correlation, fill = group_name)) +
+      geom_col(color = 'black') +
+      facet_wrap(~ group_name) +
+      scale_fill_manual(
+        breaks = unique(dtf3b$group_name), 
+        values = as.character(plotting_colors)
+      ) +
+      theme(legend.position = 'none')
+    
+    fig3 = cowplot::plot_grid(fig3a, fig3b, labels = 'AUTO')
+      
+  }
 }
+
 ## ============ OLD CODE ============
 
 if(FALSE){

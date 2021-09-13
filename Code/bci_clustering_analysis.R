@@ -14,10 +14,11 @@ theme_update(
 )
 
 
-do.clustering.analysis = 0
+do.clustering.analysis = 1
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
-do.trait.analysis = 1
+do.trait.analysis = 0
+do.paper.figures = 0
 
 do.data = 0
 do.plots = 1
