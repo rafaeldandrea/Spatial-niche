@@ -15,12 +15,14 @@ theme_update(
 
 
 do.clustering.analysis = 0
+do.kde.analysis = 0
+do.C5.analysis = 0
 do.recruitment.analysis = 0
-do.nutrient.analysis = 0
+do.nutrient.analysis = 1
 do.trait.analysis = 0
-do.paper.figures = 1
+do.paper.figures = 0
 
-do.data = 0
+do.data = 1
 do.plots = 0
 fdp = 'bci'
 
@@ -82,22 +84,16 @@ if(do.clustering.analysis){
     parameters = 
       expand_grid(
         thecensus = thecensus,
-        algorithm = c('louvain', 'walktrap'),
-        d_cutoff = seq(10, 30, by = 2),
+        algorithm = 'louvain',
+        d_cutoff = 20,
         self_loops = FALSE,
         d_step = 1e-5,
         Lx = Lx,
         Ly = 500,
         autolinked_species_only = TRUE,
         weighted = TRUE,
-        seed = 0:10
+        seed = 0:100
       )
-    
-    if(fdp %in% c('bci', 'lap')){
-      parameters %<>%
-        filter(algorithm == 'louvain', seed == 0)  
-    }
-    
     
     chunk_size = cores
     
@@ -395,6 +391,89 @@ if(do.clustering.analysis){
   
 }
 
+if(do.kde.analysis){
+  
+  data = 
+    census_data %>% 
+    filter(dbh >= 100) %>%
+    inner_join(
+      cluster_data
+    ) %>%
+    select(census, d_cutoff, gx, gy, group)
+  
+  KernelDensityEstimation = 
+    function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
+      
+      evalpoints =
+        expand_grid(
+          x = quadrat_length / 2 + seq(0, Lx - quadrat_length, by = quadrat_length),
+          y = quadrat_length / 2 + seq(0, Ly - quadrat_length, by = quadrat_length)
+        ) %>%
+        arrange(y, x)
+      
+      dens = 
+        bivariate.density(
+          ppp(gx, gy, xrange = c(0, Lx), yrange = c(0, Ly)), 
+          h0 = quadrat_length, 
+          xy = 
+            list(
+              x = evalpoints$x,
+              y = evalpoints$y
+            )
+        )
+      
+      evalpoints %>%
+        mutate(
+          density = as.numeric(t(dens$z$v))
+        ) %>%
+        return
+    }
+  
+  KDE = 
+    function(census, d_cutoff, .data){
+      
+      foo =
+        .data %>% 
+        inner_join(
+          tibble(
+            census = census,
+            d_cutoff = d_cutoff
+          )
+        ) 
+      
+      if(nrow(foo) == 0) return()
+      
+      foo %<>%
+        group_by(group) %>% 
+        summarize(
+          density = 
+            KernelDensityEstimation(gx = gx, gy = gy, Lx = 1000),
+          .groups = 'drop'
+        )
+      
+      bind_cols(
+        census = census, 
+        d_cutoff = d_cutoff, 
+        group = foo$group, 
+        foo$density
+      ) %>%
+        return()
+      
+    }
+    
+  kde_full = 
+    expand_grid(
+      census = unique(data$census),
+      d_cutoff = unique(data$d_cutoff)
+    ) %>%
+    future_pmap_dfr(
+      .f = KDE,
+      .data = data,
+      .options = furrr_options(seed = NULL)
+    )
+      
+}
+
 ## Definition of theta := P(recruit | match) / P(recruit | !match)
 if(do.recruitment.analysis){
   
@@ -523,16 +602,17 @@ if(do.recruitment.analysis){
   
   combined_data_consistent =
     combined_data %>%
+    mutate(group = factor(group)) %>%
     left_join(z_full) %>%
     mutate(group = reference) %>%
     select(-reference)
   
   cluster_data =
     cluster_data %>%
+    mutate(group = factor(group)) %>%
     inner_join(z_full) %>%
     mutate(group = reference) %>%
     select(-reference)
-  
   
   parms = 
     combined_data_consistent %>%
@@ -708,16 +788,6 @@ if(do.recruitment.analysis){
       theta_mean = weighted.mean(theta, weight),
       theta_se = sqrt(sum(weight * (theta - theta_mean) ^ 2)),
       .groups = 'drop'
-    )
-  
-  res_summary = 
-    res %>%
-    group_by(labelling_census, d_cutoff) %>%
-    mutate(weight = recruits / sum(recruits)) %>%
-    summarize(
-      theta_mean = weighted.mean(theta, weight),
-      theta_se = sqrt(sum(weight * (theta - theta_mean) ^ 2)),
-      .groups = 'drop'
     ) %>%
     group_by(d_cutoff) %>%
     summarize(
@@ -768,7 +838,7 @@ if(do.nutrient.analysis){
     library(C50)
     library(readxl)
     
-    if (fdp=='bci'){
+    if(fdp=='bci'){
       nutrients %<>%
         pivot_longer(-c(x, y), names_to = 'nutrient') %>% 
         group_by(nutrient) %>%
@@ -776,7 +846,7 @@ if(do.nutrient.analysis){
         ungroup
     }
     
-    if (fdp == 'lap') {
+    if(fdp == 'lap') {
       nutrients %<>%
         mutate(gx = gx + 10, gy = gy + 10) %>%  #move from left lower to center
         pivot_longer(-c(gx, gy), names_to = 'nutrient') %>%
@@ -805,36 +875,34 @@ if(do.nutrient.analysis){
     
     parms = 
       kde %>%
-      select(
-        Census = census, 
-        Algorithm = algorithm, 
-        Seed = seed, 
-        D_cutoff = d_cutoff, 
-        Fdp = fdp
-      ) %>%
+      select(census, algorithm, d_cutoff, fdp) %>%
       unique()
     
+    indices = 
+      if(seawulf){
+        seq(nrow(parms)) 
+      }else{
+        which(parms$census == 7 & parms$d_cutoff == 20) 
+      } 
+      
     soiltype_v_nutrients = 
-      parms %>%
-      future_pmap_dfr(
+      indices %>%
+      future_map_dfr(
         .options = furrr_options(seed = TRUE),
-        .f = function(Census, Algorithm, Seed, D_cutoff, Fdp){ 
+        .f = function(index){ 
           data = 
             dtf %>% 
-            filter(
-              census == Census,
-              algorithm == Algorithm,
-              seed == Seed,
-              d_cutoff == D_cutoff,
-              fdp == Fdp
-            ) %>%
-            {if (fdp == 'bci') select(.,Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
-              else .} %>% 
-            {if (fdp == 'lap')select(.,Al, Ca, Cu, Fe, K, Mg, Mn, P, Zn, pH, soiltype)
-              else .}%>%
+            inner_join(parms[index, ]) %>%
+            {
+              if (fdp == 'bci') 
+                select(.,Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
+              else .
+            } %>% 
+            {
+              if (fdp == 'lap')select(.,Al, Ca, Cu, Fe, K, Mg, Mn, P, Zn, pH, soiltype)
+              else .
+            } %>%
             mutate(soiltype = factor(soiltype, levels = unique(soiltype)))
-          
-          set.seed(Seed)
           
           C5_model = 
             train(
@@ -845,22 +913,21 @@ if(do.nutrient.analysis){
               metric = 'Kappa'
             )
           
-          df = 
-            C5_model$results %>%
-            slice_max(Kappa, n = 1) %>%
+          C5_model$results %>%
             as_tibble %>%
-            mutate(
-              census = Census,
-              algorithm = Algorithm,
-              seed = Seed,
-              d_cutoff = D_cutoff,
-              fdp = Fdp
-            ) %>%
+            bind_cols(parms[index, ]) %>%
             return()
         }
       )
     
-    saveRDS(soiltype_v_nutrients, file = paste0(save_directory, fdp, '_C5_soiltype_vs_nutrients.rds'))
+    if(seawulf){
+      dir.create(save_directory, showWarnings = FALSE)
+      saveRDS(
+        soiltype_v_nutrients, 
+        file = paste0(save_directory, fdp, '_C5_soiltype_vs_nutrients.rds')
+      )
+    }
+    
     
   }
   
@@ -1010,6 +1077,223 @@ if(do.nutrient.analysis){
   }
   
 }  
+
+## test C5.0 on Gaussian random field
+if(do.C5.analysis){
+  library(RandomFields)
+  library(gstat)
+  library(caret)
+  
+  seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
+  cores = if(seawulf) detectCores() else 4
+  plan(multisession, workers = cores)
+  
+  analysis = 
+    function(
+      number_of_nulls,
+      kde_full,
+      nutrients,
+      clusters_run,
+      save.result = clusters_run
+    ){
+      
+      dtf_wide = 
+        kde_full %>%
+        group_by(x, y) %>%
+        slice_max(density, with_ties = FALSE) %>%
+        ungroup() %>%
+        inner_join(nutrients)
+      
+      if(fdp == 'bci'){
+        soil_dtf = 
+          dtf_wide %>%
+          select(Al, B, Ca, Cu, Fe, K, Mg, Mn, P, Zn, N, `N(min)`, pH, soiltype)
+      }
+      
+      if(fdp == 'lap'){
+        soil_dtf = 
+          dtf_wide %>%
+          select(Al, Ca, Cu, Fe, K, Mg, Mn, P, Nmin, pH, soiltype)
+      }
+      
+      RandomField = 
+        function(
+          Lx, 
+          Ly, 
+          rangepar, 
+          sillpar, 
+          nuggetpar, 
+          seed = seed, 
+          plot = FALSE
+        ) {
+          stopifnot(nuggetpar >= 0 & nuggetpar <= 1)
+          
+          RFoptions(seed = seed)
+          
+          stress = 
+            RFsimulate(
+              RMgauss(
+                scale = rangepar + 1e-16,
+                var = 2 * sillpar * (1 - nuggetpar)
+              ) + RMtrend(mean = 0) + RMnugget(var = 2 * sillpar * nuggetpar),
+              x = 1:Lx,
+              y = 1:Ly
+            )@data$variable1
+          
+          if(plot){
+            plot(
+              raster::raster(matrix(stress, Lx, Ly)),
+              las = 1,
+              xlab = 'x-coordinate',
+              ylab = 'y-coordinate'
+            )
+          }
+          
+          return(stress)
+          
+        }
+      
+      Gaussian_vgm_optim = 
+        function(parms, sample.vgm){
+          range = parms[1]
+          sill = parms[2]
+          nugget = parms[3]
+          dist = c(0, sample.vgm$dist)
+          observed = c(0, sample.vgm$gamma)
+          predicted = (sill - nugget) * (1 - exp(-dist ^ 2 / range ^ 2)) + nugget * (dist > 0)
+          sum_squared_errors = sum((observed - predicted) ^ 2)
+          return(sum_squared_errors)
+        } 
+      
+      sample.vgm = 
+        variogram(
+          soiltype ~ 1, 
+          data = dtf_wide, 
+          locations = ~ x + y, 
+          width = 1
+        )
+      
+      fitted.vgm = 
+        optim(
+          par = c(range = 20, sill = .6, nugget = 20), 
+          fn = Gaussian_vgm_optim,
+          sample.vgm = sample.vgm,
+          method = "L-BFGS-B",
+          lower = c(1, 1, 0)
+        )$par
+      
+      sill = as.numeric(fitted.vgm[2])		## semivariance at the landscape level --> regional heterogeneity
+      nugget = as.numeric(fitted.vgm[3])	## semivariance at distance = 1	--> local uniformity
+      range = as.numeric(fitted.vgm[1])		## distance at which the semivariance reaches 63% of the sill
+      range95 = sqrt(3) * range   ## distance at which the semivariance reaches 95% of the sill
+      
+      randomfield_test = 
+        function(
+          seed, 
+          Lx,
+          Ly,
+          date,
+          .data, 
+          .range95, 
+          .sill, 
+          .func
+        ){
+          set.seed(seed)
+          
+          test_data = 
+            expand_grid(
+              y = seq(10, Ly - 10, by = 20),
+              x = seq(10, Lx - 10, by = 20)
+            ) %>%
+            mutate(
+              field = 
+                .func(
+                  Lx = Lx / 20, 
+                  Ly = Ly / 20, 
+                  rangepar = range95, 
+                  sillpar = sill, 
+                  nuggetpar = .015, 
+                  seed = seed
+                ),
+              soiltype = 
+                cut(
+                  field, 
+                  breaks = quantile(
+                    field, 
+                    p = c(
+                      0, 
+                      dtf_wide %>% 
+                        count(soiltype) %>% 
+                        mutate(p = cumsum(n) / sum(n)) %>% 
+                        pull(p)
+                    )
+                  ), ## these quantiles match the relative prevalence 
+                  ## of each soiltype in the real data
+                  labels = FALSE,
+                  include.lowest = TRUE
+                ) %>%
+                as.factor
+            )
+          
+          C5_model =
+            train(
+              soiltype ~ .,
+              data = .data %>% mutate(soiltype = test_data$soiltype),
+              method = 'C5.0',
+              trControl = trainControl(method = 'repeatedcv', repeats = 10),
+              metric = 'Kappa'
+            )
+          
+          res = 
+            bind_cols(
+              seed = seed,
+              C5_model$results
+            ) %>%
+            as_tibble
+          
+          return(res)
+          
+        }
+      
+      results = 
+        1:number_of_nulls %>%
+        future_map_dfr(
+          .f = randomfield_test,
+          Lx = ifelse(fdp == 'bci', 1000, 500),
+          Ly = 500,
+          date = date,
+          .data = soil_dtf,
+          .sill = sill,
+          .range95 = range95,
+          .func = RandomField,
+          .options = furrr_options(seed = NULL)
+        )
+      
+      if(save.result){
+        
+        save_date = gsub('-', '', Sys.Date())
+        save_directory = paste0('~/SpatialNiche/Data/', save_date)
+        dir.create(save_directory, showWarnings = FALSE)
+        saveRDS(
+          results,
+          file = paste0(save_directory, '/', fdp, '_C5_randomfields.rds')
+        ) 
+      }
+      
+      return(results)
+      
+    }
+  
+  results = 
+    analysis(
+      number_of_nulls = ifelse(seawulf, 100, 1),
+      kde_full = kde_full,
+      nutrients = nutrients,
+      clusters_run = seawulf
+    )
+  
+}
+
 
 if(do.trait.analysis){
   
@@ -1186,8 +1470,8 @@ if(do.trait.analysis){
     inner_join(pca_data)
   
   correlations = 
-    all_data |> 
-    group_by(trait_type, nutrient) |> 
+    all_data %>% 
+    group_by(trait_type, nutrient) %>% 
     summarize(
       cor = cor(standardized, pc1), 
       pval = cor.test(standardized, pc1)$p.value,
@@ -1222,10 +1506,10 @@ if(do.trait.analysis){
     ) 
   
   mean_correlation = 
-    cor_analysis |> 
-    filter(census == 7, d_cutoff == 20, !nutrient %in% c('Al', 'pH')) |> 
-    group_by(soiltype) |> 
-    summarize(mean_cor = mean(cor), .groups = 'drop') |>
+    cor_analysis %>% 
+    filter(census == 7, d_cutoff == 20, !nutrient %in% c('Al', 'pH')) %>% 
+    group_by(soiltype) %>% 
+    summarize(mean_cor = mean(cor), .groups = 'drop') %>%
     mutate(
       group_ID = 
         factor(
@@ -1236,13 +1520,13 @@ if(do.trait.analysis){
   
   all_data %<>%
     inner_join(
-      mean_correlation |>
+      mean_correlation %>%
         select(group = soiltype, group_ID)
     )
   
   cor_analysis %<>%
     inner_join(
-      mean_correlation |>
+      mean_correlation %>%
         select(soiltype, group_ID)
     )  
   
@@ -1267,45 +1551,43 @@ if(do.trait.analysis){
     pull(group_ID) %>% 
     levels()
   
-  
-  
   plot_correlations = 
-    correlations |> 
-    filter(pval <= .05) |>
+    correlations %>% 
+    filter(pval <= .05) %>%
     ggplot(aes(trait_type, nutrient, fill = cor)) + 
     geom_tile() + 
     scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
   
-  plot_correlations |>
+  plot_correlations %>%
     show()
   
   plot_group_densities = 
-    all_data |> 
-    filter(trait_type == 'vital', nutrient == 'Fe') |> 
+    all_data %>% 
+    filter(trait_type == 'vital', nutrient == 'Fe') %>% 
     ggplot(aes(gx, gy)) + 
     geom_density_2d_filled() + 
     theme(aspect.ratio = .5) + 
     facet_wrap(~ group_ID)
   
   plot_trait_violins_trees = 
-    all_data |> 
-    filter(nutrient == 'Fe') |> 
+    all_data %>% 
+    filter(nutrient == 'Fe') %>% 
     ggplot(aes(group_ID, pc1, fill = group_ID)) + 
     geom_violin(draw_quantiles = .5) + 
     facet_wrap(~ trait_type)
   
   plot_trait_violins_species = 
-    all_data |> 
-    filter(nutrient == 'Fe') |> 
-    select(sp, group_ID, pc1, trait_type) |>
-    unique() |>
+    all_data %>% 
+    filter(nutrient == 'Fe') %>% 
+    select(sp, group_ID, pc1, trait_type) %>%
+    unique() %>%
     ggplot(aes(group_ID, pc1, fill = group_ID)) + 
     geom_violin(draw_quantiles = .5) + 
     facet_wrap(~ trait_type)
   
   plot_group_nutrient_correlations = 
-    cor_analysis |> 
-    filter(census == 7, d_cutoff == 20) |> 
+    cor_analysis %>% 
+    filter(census == 7, d_cutoff == 20) %>% 
     ggplot(aes(nutrient, cor, fill = group_ID)) + 
     geom_col() + 
     facet_wrap(~ group_ID)
@@ -1334,9 +1616,12 @@ if(do.trait.analysis){
 
 if(do.paper.figures){
   
-  do.fig1 = 1
-  do.fig2 = 1
-  do.fig3 = 1
+  do.fig1 = 0
+  do.fig2 = 0
+  do.fig3 = 0
+  do.fig4 = 0
+  do.table = 0
+  do.SI.figs = 1
   
   selection = tibble(census = 7, d_cutoff = 20)
   
@@ -1369,10 +1654,10 @@ if(do.paper.figures){
     summarize(
       cor = cor(density, standardized, use = 'complete.obs'), 
       .groups = 'drop'
-    ) |> 
-    filter(!nutrient %in% c('Al', 'pH')) |> 
-    group_by(soiltype) |> 
-    summarize(mean_cor = mean(cor), .groups = 'drop') |>
+    ) %>% 
+    filter(!nutrient %in% c('Al', 'pH')) %>% 
+    group_by(soiltype) %>% 
+    summarize(mean_cor = mean(cor), .groups = 'drop') %>%
     mutate(
       group_ID = 
         factor(
@@ -1540,20 +1825,12 @@ if(do.paper.figures){
       ) +
       labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
     
-    fig2c = 
-      data %>%
-      filter(trait_type == 'vital') %>%
-      ggplot(aes(x, y, fill = standardized)) +
-      geom_tile() +
-      facet_wrap(~nutrient, nrow = 3) +
-      scale_fill_gradientn(colors = terrain.colors(1000)) +
-      theme(
-        aspect.ratio = .5, 
-        legend.position = 'none'
-      ) +
-      labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
-    
-    fig2 = cowplot::plot_grid(fig2a, fig2b, fig2c, labels = 'AUTO', rel_widths = c(1, 2), byrow = FALSE)
+    fig2 = 
+      cowplot::plot_grid(
+        fig2a, 
+        fig2b,
+        labels = 'AUTO'
+      )
       
   }
   
@@ -1645,6 +1922,381 @@ if(do.paper.figures){
     fig3 = cowplot::plot_grid(fig3a, fig3b, labels = 'AUTO')
       
   }
+  
+  if(do.fig4){
+    dtf4 = 
+      data %>%
+      filter(
+        nutrient == 'P',
+        trait_type %in% c('vital', 'leaf', 'wood')
+      ) %>%
+      select(sp, group, trait_type, pc1) %>%
+      unique() %>%
+      pivot_wider(names_from = trait_type, values_from = pc1) %>%
+      arrange(group)
+    
+    fig4 = 
+      dtf4 %>%
+      ggplot(aes(vital, wood, color = group)) +
+      geom_point(size = 4) +
+      theme(
+        aspect.ratio = 1,
+        legend.position = 'none'
+      ) +
+      scale_color_manual(
+        breaks = unique(dtf4$group),
+        values = as.character(plotting_colors)
+      ) +
+      labs(x = 'vital rates PC1', y = 'wood density PC1')
+    
+  }
+  
+  if(do.table){
+    table = 
+      data %>%
+      filter(
+        nutrient == 'P',
+        trait_type %in% c('vital', 'leaf', 'wood')
+      ) %>%
+      select(sp, group, trait_type, pc1) %>%
+      unique() %>%
+      mutate(group_name = names(plotting_colors)[group]) %>%
+      group_by(trait_type) %>% 
+      summarize(
+        group_x = rep(names(plotting_colors)[-1], 3),
+        group_y = rep(names(plotting_colors)[-length(names(plotting_colors))], each = 3),
+        pval = as.numeric(pairwise.wilcox.test(pc1, group)$p.value),
+        .groups = 'drop'
+      ) %>%
+      pivot_wider(names_from = group_y, values_from = pval)
+  }
+  
+  if(do.SI.figs){
+    
+    ## spatial density of nutrients
+    sfig_nutrients = 
+      data %>%
+      filter(trait_type == 'vital') %>%
+      ggplot(aes(x, y, fill = standardized)) +
+      geom_tile() +
+      facet_wrap(~nutrient, nrow = 3) +
+      scale_fill_gradientn(colors = terrain.colors(1000)) +
+      theme(
+        aspect.ratio = .5, 
+        legend.position = 'none'
+      ) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
+    
+    ## violin plots
+    sfig_violins = 
+      data %>%
+      filter(
+        nutrient == 'P', 
+        trait_type %in% c('vital', 'wood', 'leaf')
+      ) %>%
+      ggplot(aes(group, pc1, fill = group)) +
+      geom_violin() +
+      facet_wrap(~ trait_type, scales = 'free') +
+      scale_fill_manual(
+        breaks = c(1, 2, 5, 3),
+        values = as.character(plotting_colors)
+      ) +
+      theme(
+        legend.position = 'none',
+        aspect.ratio = 1,
+        axis.text.x = element_blank()
+      )
+    
+    sfig_violins_unweighted = 
+      data %>%
+      filter(
+        nutrient == 'P', 
+        trait_type %in% c('vital', 'wood', 'leaf')
+      ) %>%
+      select(group, pc1, trait_type) %>%
+      unique() %>%
+      ggplot(aes(group, pc1, fill = group)) +
+      geom_violin() +
+      facet_wrap(~ trait_type, scales = 'free') +
+      scale_fill_manual(
+        breaks = c(1, 2, 5, 3),
+        values = as.character(plotting_colors)
+      ) +
+      theme(
+        legend.position = 'none',
+        aspect.ratio = 1,
+        axis.text.x = element_blank()
+      )
+    
+    ## correlation between traits and trait type PC1
+    sfig_traits_v_PC1 = 
+      'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_trait_data_processed.rds?raw=true' %>%
+      url() %>%
+      readRDS() %>% 
+      filter(trait_type %in% c('vital', 'wood', 'leaf')) %>% 
+      ggplot(aes(standardized, pc1)) + 
+      geom_point() + 
+      facet_wrap(trait_type ~ trait, ncol = 8) + 
+      theme(aspect.ratio = 1) +
+      labs(
+        x = 'standardized trait value',
+        y = 'trait type PC1'
+      )
+    
+    ## correlations between PC1 of each trait type
+    dtfsfig = 
+      data %>% 
+      filter(
+        nutrient == 'P', 
+        trait_type %in% c('vital', 'wood', 'leaf')
+      ) %>% 
+      select(sp, trait_type, pc1) %>% 
+      unique() %>% 
+      left_join(
+        x = .,
+        y = .,
+        by = 'sp'
+      ) %>% 
+      filter(trait_type.x > trait_type.y)
+    
+    sfig_trait_type_PC1 = 
+      dtfsfig %>%
+      ggplot(aes(pc1.x, pc1.y)) + 
+      geom_smooth(method = 'lm') +
+      geom_point() + 
+      facet_grid(trait_type.x ~  trait_type.y, scales = 'free') + 
+      theme(aspect.ratio = 1) +
+      labs(x = 'trait type PC1', y = 'trait type PC1')
+    
+    correlations_pvalues = 
+      dtfsfig %>% 
+      group_by(trait_type.x, trait_type.y) %>% 
+      summarize(
+        cor = cor(pc1.x, pc1.y), 
+        pval = cor.test(pc1.x, pc1.y)$p.value, 
+        .groups = 'drop'
+      )
+    
+    ## number of groups per census x d_cutoff
+    sfig_ngroups = 
+      cluster_data %>% 
+      group_by(census, d_cutoff) %>% 
+      summarize(
+        ngroups = unique(number_of_groups), 
+        .groups = 'drop'
+      ) %>%
+      mutate(`# groups` = factor(ngroups)) %>%
+      ggplot(aes(d_cutoff, census, fill = `# groups`)) +
+      geom_tile(color = 'black') +
+      theme(aspect.ratio = 1) +
+      labs(x = 'distance cutoff')
+    
+    ## soil-type raster per census x d_cutoff
+    plotting_colors5 = 
+      c(
+        red = "#DD5144",
+        plum = 'plum4',
+        green = "#1DA462",
+        blue = "#4C8BF5",
+        yellow = "#FFCD46")
+      
+    sfig_soiltypes = 
+      kde_full %>%
+      filter(d_cutoff %in% c(10, 20, 30)) %>%
+      select(x, y, census, d_cutoff, soiltype) %>%
+      unique() %>%
+      mutate(
+        soiltype = 
+          factor(
+            soiltype, 
+            levels = c(1, 4, 2, 5, 3)
+          )
+      ) %>%
+      ggplot(aes(x, y, fill = soiltype)) +
+      geom_tile() +
+      facet_grid(census ~ d_cutoff) +
+      theme(aspect.ratio = .5) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)') +
+      scale_fill_manual(
+        breaks = c(1, 4, 2, 5, 3), 
+        values = as.character(plotting_colors5)
+      )
+    
+    ## correlation between group density and nutrient concentration per census x d_cutoff
+    dtf_sfig = 
+      data %>%
+      select(x, y, nutrient, standardized) %>%
+      unique() %>%
+      inner_join(
+        kde_full %>%
+          select(census, d_cutoff, x, y, group, density)
+      ) %>%
+      filter(d_cutoff %in% c(10, 20, 30)) %>%
+      group_by(nutrient, group, d_cutoff) %>%
+      summarize(
+        cor = cor(standardized, density), 
+        .groups = 'drop'
+      )
+      
+      dtf_sfig %<>%
+      mutate(
+        group = 
+          factor(
+            group,
+            levels = 
+              dtf_sfig %>% 
+              filter(d_cutoff == 20) %>% 
+              group_by(group) %>% 
+              summarize(
+                mean_cor = mean(cor), 
+                .groups = 'drop'
+              ) %>% 
+              arrange(desc(mean_cor)) %>% 
+              pull(group)
+          )
+      )
+    
+    sfig_bars = 
+      dtf_sfig %>% 
+      ggplot(aes(nutrient, cor, fill = group)) + 
+      geom_col(color = 'black') + 
+      facet_grid(d_cutoff ~ group) +
+      theme(aspect.ratio = 1) +
+      scale_fill_manual(
+        breaks = c(1, 4, 2, 5, 3), 
+        values = as.character(plotting_colors5)
+      )
+    
+    ## average theta across censuses by d_cutoff
+    recruits = 
+      census_data %>%
+      filter(dbh >= 100) %>%
+      select(census, treeID, sp, gx, gy, dbh) %>%
+      filter(census > 1) %>%
+      group_by(treeID) %>%
+      slice_min(census) %>%
+      ungroup %>%
+      mutate(recruit = TRUE)
+    
+    rec_df = 
+      recruits %>%
+      mutate(
+        x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
+        y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
+      ) %>%
+      inner_join(
+        kde_full %>%
+          select(
+            labelling_census = census, 
+            x, 
+            y, 
+            algorithm, 
+            seed, 
+            d_cutoff, 
+            soiltype, 
+            fdp
+          ) %>%
+          unique(),
+        by = c('x', 'y')
+      ) %>%
+      inner_join(
+        cluster_data %>%
+          rename(labelling_census = census)
+      )
+    
+    prior_df = 
+      kde_full %>% 
+      select(x, y, d_cutoff, soiltype, census) %>% 
+      unique() %>% 
+      count(census, d_cutoff, soiltype) %>% 
+      mutate(Pm = n / (1000 * 500 / 20 ^ 2)) %>% 
+      ungroup() %>%
+      rename(labelling_census = census)
+    
+    res =
+      rec_df %>%
+      group_by(
+        labelling_census,
+        d_cutoff,
+        group
+      ) %>%
+      summarize(
+        recruits = n(),
+        matches = sum(group == soiltype),
+        .groups = 'drop'
+      ) %>%
+      left_join(
+        prior_df %>%
+          rename(group = soiltype)
+      ) %>%
+      mutate(
+        theta = ((1 - Pm) / Pm) / (recruits / matches - 1)
+      ) %>%
+      group_by(labelling_census, d_cutoff) %>%
+      mutate(weight = recruits / sum(recruits)) %>%
+      summarize(
+        theta_mean = weighted.mean(theta, weight),
+        theta_se = sqrt(sum(weight * (theta - theta_mean) ^ 2)),
+        .groups = 'drop'
+      ) %>%
+      group_by(d_cutoff) %>%
+      summarize(
+        theta_mean = mean(theta_mean),
+        theta_se = sqrt(sum(theta_se ^ 2)) / n(),
+        .groups = 'drop'
+      )
+    
+    sfig_theta_bars = 
+      res %>%
+      ggplot(aes(d_cutoff, theta_mean)) +
+      geom_hline(yintercept = 1, color = 'grey') +
+      geom_errorbar(
+        aes(
+          x = d_cutoff, 
+          ymin = theta_mean, 
+          ymax = theta_mean + 2 * theta_se
+        )
+      ) +
+      geom_col(fill = 'plum4') +
+      labs(x = 'Distance cutoff', y = 'Theta estimate') +
+      theme(aspect.ratio = 1)
+    
+    ## modularity in data vs permutated data (where species groups are permutated)
+    ## (BCI census = 7, d_cutoff = 20)
+    dat = 
+      "C:/Users/rdand/Google Drive/GitHub/Spatial-niche/Data/Manuscript-Data/bci_clustering_analysis_census7_dcutoff20.rds" %>%
+      readRDS()
+    
+    dat %>% 
+      select(
+        algorithm, 
+        weighted, 
+        seed, 
+        modularity, 
+        census, 
+        d_cutoff
+      ) %>% 
+      unique() %>% 
+      filter(seed > 0) %>% 
+      group_by(weighted) %>% 
+      summarize(
+        mu = mean(modularity), 
+        sigma = sd(modularity), 
+        .groups = 'drop'
+      ) %>% 
+      inner_join(
+        dat %>% 
+          select(weighted, seed, modularity, census, d_cutoff) %>% 
+          unique() %>% 
+          filter(seed == 0)
+        ) %>% 
+      mutate(z = (modularity - mu) / sigma)
+    
+    
+
+  }
+  
+  
 }
 
 ## ============ OLD CODE ============
