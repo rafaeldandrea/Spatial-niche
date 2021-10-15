@@ -65,7 +65,7 @@ if(do.clustering.analysis){
     save_date = gsub('-', '', Sys.Date())
     save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
     
-    source('https://github.com/rafaeldandrea/Spatial-niche/raw/Lap/Code/clustering_functions.R')
+    source('https://github.com/rafaeldandrea/Spatial-niche/raw/main/Code/clustering_functions.R')
     
     if(fdp == 'bci'){
       Lx = 1000
