@@ -2,9 +2,11 @@ library(tidyverse)
 library(magrittr)
 library(furrr)
 library(parallel)
-library(parallelDist)
+library(parallelDist) ## function parDist(X) calculates distances between rows of matrix X
+library(pdist) ## for function pdist(X, Y), calculates distances between rows of matrices X and Y
 library(readxl)
 library(pcaMethods)
+library(sparr) # for function bivariate.density() in KDE()
 
 
 theme_set(theme_bw())
@@ -14,11 +16,11 @@ theme_update(
 )
 
 
-do.clustering.analysis = 0
+do.clustering.analysis = 1
 do.kde.analysis = 0
 do.C5.analysis = 0
 do.recruitment.analysis = 0
-do.nutrient.analysis = 1
+do.nutrient.analysis = 0
 do.trait.analysis = 0
 do.paper.figures = 0
 
@@ -36,9 +38,12 @@ read_datafile =
     readRDS(url(paste0(data_directory, fdp, filename, suffix)))
   }
 
+cluster_data = readRDS('~/SpatialNiche/Data/20211004/bci_clustering_analysis.rds')
+kde_full = readRDS('~/SpatialNiche/Data/20211004/bci_inferred_soiltypes.rds')
+
 census_data = read_datafile('_census_data.rds')
-cluster_data = read_datafile('_clustering_analysis.rds')
-kde_full = read_datafile('_inferred_soiltypes.rds')
+# cluster_data = read_datafile('_clustering_analysis.rds')
+# kde_full = read_datafile('_inferred_soiltypes.rds')
 soiltype_v_nutrients = read_datafile('_C5_soiltype_vs_nutrients.rds')
 nutrients = read_datafile('_nutrient_data.rds')
 if(fdp == 'bci') trait_data_raw = read_datafile('_trait_data.rds')
@@ -64,14 +69,48 @@ if(do.clustering.analysis){
     
     if(fdp == 'bci'){
       Lx = 1000
-      bci =
-        readRDS(
-          url(
-            'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_all_censuses.rds?raw=true'
-          )
-        )
+      # bci =
+      #   readRDS(
+      #     url(
+      #       'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_all_censuses.rds?raw=true'
+      #     )
+      #   )
       filename = paste0(save_directory, 'bci_clustering_analysis.rds')
       thecensus=1:7
+      
+      prefix = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.full'
+      suffix = '.rdata?raw=true'
+      bci = NULL
+      for(census in 1:7){
+        bci_raw = 
+          get(load(url(paste0(prefix, census, suffix)))) %>%
+          as_tibble() %>%
+          drop_na(dbh)
+        
+        bci_sp = 
+          bci_raw %>% 
+          group_by(sp) %>% 
+          summarize(
+            baldeck_cutoff = quantile(dbh, .44),
+            baldeck_n = sum(dbh > baldeck_cutoff),
+            .groups = 'drop'
+          ) %>% 
+          inner_join(
+            bci_raw %>% 
+              count(sp)
+          )
+        
+        bci = 
+          bci %>%
+          bind_rows(
+            bci_raw %>%
+              inner_join(bci_sp) %>%
+              filter(dbh >= baldeck_cutoff) %>%
+              select(sp, gx, gy) %>%
+              mutate(census = census)  
+          )
+      }
+      
     }
     
     if(fdp == 'lap'){
@@ -85,12 +124,12 @@ if(do.clustering.analysis){
       expand_grid(
         thecensus = thecensus,
         algorithm = 'louvain',
-        d_cutoff = 20,
+        d_cutoff = seq(10, 30, by = 2),
         self_loops = FALSE,
         d_step = 1e-5,
         Lx = Lx,
         Ly = 500,
-        autolinked_species_only = TRUE,
+        autolinked_species_only = FALSE,
         weighted = TRUE,
         seed = 0:100
       )
@@ -168,130 +207,44 @@ if(do.clustering.analysis){
       saveRDS(fdp_analyzed, file = filename)
     }
     
-    cluster_data = readRDS(filename)
+    x = 
+      readRDS(filename) %>% 
+      filter(seed == 0, d_cutoff >= 20) %>% 
+      select(census, d_cutoff, sp, group, number_of_groups)
     
-    adults = 
-      census_data %>%
-      filter(dbh >= 100) %>%
-      select(census, treeID, sp, gx, gy, dbh)
+    x0 = 
+      x %>%
+      filter(census == 7, d_cutoff == 20)
     
-    recruits = 
-      adults %>%
-      filter(census > 1) %>%
-      group_by(treeID) %>%
-      slice_min(census) %>%
-      ungroup %>%
-      mutate(recruit = TRUE)
-    
-    trees =
-      adults %>% 
-      left_join(
-        recruits, 
-        by = c('census', 'treeID', 'sp', 'gx', 'gy', 'dbh')
-      ) %>%
-      replace_na(list(recruit = FALSE))
-    
-    combined_data =
-      trees %>%
-      inner_join(
-        cluster_data, 
-        by = c('census', 'sp')
-      )
-    
-    reference =
-      combined_data %>%
-      inner_join(
-        combined_data %>%
-          select(census, d_cutoff, number_of_groups) %>%
-          unique() %>%
-          slice_max(number_of_groups, with_ties = FALSE)
-      ) %>%
-      count(group) %>%
-      mutate(reference = rev(rank(n))) %>%
-      full_join(
-        combined_data %>%
-          inner_join(
-            combined_data %>%
-              select(census, d_cutoff, number_of_groups) %>%
-              unique() %>%
-              slice_max(number_of_groups, with_ties = FALSE)
-          )
-      ) %>%
-      select(treeID, reference)
-    
-    z_full = NULL
-    for(thecensus in sort(unique(combined_data$census))){
+    res = NULL
+    for(rg in 1:4){
+      foo = 
+        x %>%
+        group_by(census, d_cutoff, group) %>%
+        summarize(
+          int = length(intersect(sp, x0 %>% filter(group == rg) %>% pull(sp))),
+          .groups = 'drop'
+        ) %>%
+        group_by(census, d_cutoff) %>%
+        slice_max(int, n = 1, with_ties = FALSE) %>%
+        ungroup() %>%
+        mutate(reference_group = rg) %>%
+        select(-int)
       
-      for(thed_cutoff in sort(unique(combined_data$d_cutoff))){
-        
-        z = NULL
-        
-        x =
-          combined_data %>%
-          filter(
-            census == thecensus,
-            d_cutoff == thed_cutoff
-          ) %>%
-          inner_join(
-            reference,
-            by = 'treeID'
-          ) %>%
-          count(
-            census,
-            d_cutoff,
-            group,
-            reference
-          ) %>%
-          mutate(group = factor(group)) %>%
-          complete(group, nesting(census, d_cutoff, reference)) %>%
-          replace_na(list(n = 0)) %>%
-          arrange(desc(n))
-        
-        if(nrow(x) > 0){
-          z %<>%
-            bind_rows(
-              tibble(
-                census = thecensus,
-                d_cutoff = thed_cutoff,
-                group = x$group[1],
-                reference = x$reference[1]
-              )
-            )
-          
-          for(i in 2:nrow(x)){
-            
-            g = x$group[i]
-            r = x$reference[i]
-            
-            if(!g %in% z$group & !r %in% z$reference){
-              z %<>%
-                bind_rows(
-                  tibble(
-                    census = thecensus,
-                    d_cutoff = thed_cutoff,
-                    group = g,
-                    reference = r
-                  )
-                )
-              
-              z_full %<>%
-                bind_rows(z)
-            }
-          }
-        }
-      }
+      res = 
+        res %>%
+        bind_rows(foo)
+      
     }
     
-    z_full %<>%
-      unique()
+    consistent_cluster_data = 
+      cluster_data %>% 
+      full_join(res) %>% 
+      replace_na(list(reference_group = 5)) %>%
+      select(-group) %>%
+      rename(group = reference_group)
     
-    cluster_data_consistent =
-      cluster_data %>%
-      inner_join(z_full) %>%
-      mutate(group = reference) %>%
-      select(-reference)
-    
-    saveRDS(cluster_data_consistent, filename)
+    saveRDS(consistent_cluster_data, filename)
     
   }
   
@@ -393,11 +346,53 @@ if(do.clustering.analysis){
 
 if(do.kde.analysis){
   
+  x = 
+    cluster_data %>% 
+    filter(seed == 0, d_cutoff >= 20) %>% 
+    select(census, d_cutoff, sp, group, number_of_groups)
+  
+  x0 = 
+    x %>%
+    filter(census == 7, d_cutoff == 20)
+  
+  res = NULL
+  for(rg in 1:4){
+    foo = 
+      x %>%
+      group_by(census, d_cutoff, group) %>%
+      summarize(
+        int = length(intersect(sp, x0 %>% filter(group == rg) %>% pull(sp))),
+        .groups = 'drop'
+      ) %>%
+      group_by(census, d_cutoff) %>%
+      slice_max(int, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      mutate(reference_group = rg) %>%
+      select(-int)
+    
+    res = 
+      res %>%
+      bind_rows(foo)
+    
+  }
+  
+  consistent_cluster_data = 
+    cluster_data %>% 
+    full_join(res) %>% 
+    replace_na(list(reference_group = 5)) %>%
+    select(-group) %>%
+    rename(group = reference_group)
+  
+  
   data = 
     census_data %>% 
     filter(dbh >= 100) %>%
+    select(sp, census, gx, gy) %>%
     inner_join(
-      cluster_data
+      consistent_cluster_data %>%
+        filter(d_cutoff >= 20) %>%
+        filter(seed == 0) %>%
+        select(sp, census, d_cutoff, group)
     ) %>%
     select(census, d_cutoff, gx, gy, group)
   
@@ -471,6 +466,17 @@ if(do.kde.analysis){
       .data = data,
       .options = furrr_options(seed = NULL)
     )
+  
+  kde_full %<>%
+    inner_join(
+      kde_full %>%
+        group_by(census, d_cutoff, x, y) %>%
+        slice_max(density, n = 1, with_ties = FALSE) %>%
+        rename(soiltype = group) %>%
+        ungroup()
+    ) %>%
+    mutate(fdp = fdp) %>%
+    mutate(soiltype = factor(soiltype, levels = c(2, 4, 1, 3, 5)))
       
 }
 
@@ -509,7 +515,8 @@ if(do.recruitment.analysis){
   combined_data =
     trees %>%
     inner_join(
-      cluster_data, 
+      cluster_data %>%
+        filter(seed == 0), 
       by = c('census', 'sp')
     )
   
@@ -1454,7 +1461,10 @@ if(do.trait.analysis){
   all_data = 
     census_data %>%
     filter(dbh >= 100) %>%
-    inner_join(cluster_data) %>%
+    inner_join(
+      cluster_data %>% 
+        filter(seed == 0)
+    ) %>%
     mutate(
       x = seq(10, 990, 20)[cut(gx, seq(20, 1000, 20), labels = FALSE)],
       y = seq(10, 490, 20)[cut(gy, seq(20,  500, 20), labels = FALSE)]
@@ -1489,8 +1499,6 @@ if(do.trait.analysis){
     ) %>%
     group_by(
       census, 
-      algorithm,
-      seed,
       d_cutoff,
       fdp,
       nutrient,
@@ -1616,11 +1624,11 @@ if(do.trait.analysis){
 
 if(do.paper.figures){
   
-  do.fig1 = 0
-  do.fig2 = 0
-  do.fig3 = 0
-  do.fig4 = 0
-  do.table = 0
+  do.fig1 = 1
+  do.fig2 = 1
+  do.fig3 = 1
+  do.fig4 = 1
+  do.table = 1
   do.SI.figs = 1
   
   selection = tibble(census = 7, d_cutoff = 20)
@@ -1666,10 +1674,14 @@ if(do.paper.figures){
         )
     )
   
+  # data = 
+  #   'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_figure_data.rds?raw=true' %>%
+  #   url() %>%
+  #   readRDS() %>%
+  #   mutate(group = factor(group, levels = levels(group_levels$group_ID)))
+  
   data = 
-    'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_figure_data.rds?raw=true' %>%
-    url() %>%
-    readRDS() %>%
+    readRDS('~/SpatialNiche/Data/20211004/bci_figure_data.rds') %>%
     mutate(group = factor(group, levels = levels(group_levels$group_ID)))
   
   species_names = 
@@ -1688,6 +1700,7 @@ if(do.paper.figures){
   
   species_by_group = 
     cluster_data %>%
+    filter(seed == 0) %>%
     inner_join(selection) %>%
     select(sp1 = sp, group) %>%
     mutate(
@@ -1917,7 +1930,10 @@ if(do.paper.figures){
         breaks = unique(dtf3b$group_name), 
         values = as.character(plotting_colors)
       ) +
-      theme(legend.position = 'none')
+      theme(
+        legend.position = 'none',
+        aspect.ratio = 1
+      )
     
     fig3 = cowplot::plot_grid(fig3a, fig3b, labels = 'AUTO')
       
@@ -1988,7 +2004,7 @@ if(do.paper.figures){
       labs(x = 'x coordinate (m)', y = 'y coordinate (m)')
     
     ## violin plots
-    sfig_violins = 
+    sfig_violins_by_trees = 
       data %>%
       filter(
         nutrient == 'P', 
@@ -1998,16 +2014,17 @@ if(do.paper.figures){
       geom_violin() +
       facet_wrap(~ trait_type, scales = 'free') +
       scale_fill_manual(
-        breaks = c(1, 2, 5, 3),
+        breaks = c(2, 4, 1, 3),
         values = as.character(plotting_colors)
       ) +
       theme(
         legend.position = 'none',
         aspect.ratio = 1,
         axis.text.x = element_blank()
-      )
+      ) +
+      labs(x = '', y = 'Trait PC1')
     
-    sfig_violins_unweighted = 
+    sfig_violins_by_species = 
       data %>%
       filter(
         nutrient == 'P', 
@@ -2019,14 +2036,23 @@ if(do.paper.figures){
       geom_violin() +
       facet_wrap(~ trait_type, scales = 'free') +
       scale_fill_manual(
-        breaks = c(1, 2, 5, 3),
+        breaks = c(2, 4, 1, 3),
         values = as.character(plotting_colors)
       ) +
       theme(
         legend.position = 'none',
         aspect.ratio = 1,
         axis.text.x = element_blank()
-      )
+      ) +
+      labs(x = '', y = 'Trait PC1')
+    
+    sfig_violins = 
+      cowplot::plot_grid(
+        sfig_violins_by_trees,
+        sfig_violins_by_species,
+        nrow = 2,
+        labels = 'AUTO'
+      ) 
     
     ## correlation between traits and trait type PC1
     sfig_traits_v_PC1 = 
@@ -2080,6 +2106,8 @@ if(do.paper.figures){
     ## number of groups per census x d_cutoff
     sfig_ngroups = 
       cluster_data %>% 
+      filter(seed == 0) %>%
+      filter(d_cutoff >= 20) %>%
       group_by(census, d_cutoff) %>% 
       summarize(
         ngroups = unique(number_of_groups), 
@@ -2102,27 +2130,32 @@ if(do.paper.figures){
       
     sfig_soiltypes = 
       kde_full %>%
-      filter(d_cutoff %in% c(10, 20, 30)) %>%
+      filter(d_cutoff >= 20) %>%
       select(x, y, census, d_cutoff, soiltype) %>%
       unique() %>%
-      mutate(
-        soiltype = 
-          factor(
-            soiltype, 
-            levels = c(1, 4, 2, 5, 3)
-          )
-      ) %>%
+      # mutate(
+      #   soiltype = 
+      #     factor(
+      #       soiltype, 
+      #       levels = c(1, 4, 2, 5, 3)
+      #     )
+      # ) %>%
       ggplot(aes(x, y, fill = soiltype)) +
       geom_tile() +
-      facet_grid(census ~ d_cutoff) +
-      theme(aspect.ratio = .5) +
-      labs(x = 'x coordinate (m)', y = 'y coordinate (m)') +
-      scale_fill_manual(
-        breaks = c(1, 4, 2, 5, 3), 
-        values = as.character(plotting_colors5)
-      )
+      facet_grid(d_cutoff ~ census) +
+      theme(
+        aspect.ratio = .5,
+        legend.position = 'none'
+      ) +
+      labs(x = 'x coordinate (m)', y = 'y coordinate (m)') #+
+      # scale_fill_manual(
+      #   breaks = c(1, 4, 2, 5, 3), 
+      #   values = as.character(plotting_colors5)
+      # )
     
     ## correlation between group density and nutrient concentration per census x d_cutoff
+    groupnames = c('red', 'purple', 'green', 'blue', 'yellow')
+    
     dtf_sfig = 
       data %>%
       select(x, y, nutrient, standardized) %>%
@@ -2131,14 +2164,14 @@ if(do.paper.figures){
         kde_full %>%
           select(census, d_cutoff, x, y, group, density)
       ) %>%
-      filter(d_cutoff %in% c(10, 20, 30)) %>%
+      filter(d_cutoff >= 20) %>%
       group_by(nutrient, group, d_cutoff) %>%
       summarize(
         cor = cor(standardized, density), 
         .groups = 'drop'
       )
-      
-      dtf_sfig %<>%
+    
+    dtf_sfig %<>%
       mutate(
         group = 
           factor(
@@ -2154,18 +2187,25 @@ if(do.paper.figures){
               arrange(desc(mean_cor)) %>% 
               pull(group)
           )
-      )
+      ) %>%
+      mutate(group = groupnames[group]) %>%
+      mutate(group = factor(group, levels = groupnames))
+      
     
     sfig_bars = 
       dtf_sfig %>% 
       ggplot(aes(nutrient, cor, fill = group)) + 
       geom_col(color = 'black') + 
-      facet_grid(d_cutoff ~ group) +
-      theme(aspect.ratio = 1) +
+      facet_grid(group ~ d_cutoff) +
+      theme(
+        aspect.ratio = 1,
+        legend.position = 'none'
+      ) +
       scale_fill_manual(
-        breaks = c(1, 4, 2, 5, 3), 
+        breaks = groupnames, 
         values = as.character(plotting_colors5)
-      )
+      ) +
+      ylab('correlation')
     
     ## average theta across censuses by d_cutoff
     recruits = 
@@ -2190,8 +2230,6 @@ if(do.paper.figures){
             labelling_census = census, 
             x, 
             y, 
-            algorithm, 
-            seed, 
             d_cutoff, 
             soiltype, 
             fdp
@@ -2201,6 +2239,7 @@ if(do.paper.figures){
       ) %>%
       inner_join(
         cluster_data %>%
+          filter(seed == 0) %>%
           rename(labelling_census = census)
       )
     
@@ -2267,7 +2306,11 @@ if(do.paper.figures){
       "C:/Users/rdand/Google Drive/GitHub/Spatial-niche/Data/Manuscript-Data/bci_clustering_analysis_census7_dcutoff20.rds" %>%
       readRDS()
     
-    dat %>% 
+    all_censuses = "C:/Users/rdand/Google Drive/GitHub/Spatial-niche/Data/Manuscript-Data/bci_clustering_analysis.rds" %>%
+      readRDS()
+    
+    null = 
+      dat %>% 
       select(
         algorithm, 
         weighted, 
@@ -2283,20 +2326,52 @@ if(do.paper.figures){
         mu = mean(modularity), 
         sigma = sd(modularity), 
         .groups = 'drop'
-      ) %>% 
-      inner_join(
-        dat %>% 
-          select(weighted, seed, modularity, census, d_cutoff) %>% 
-          unique() %>% 
-          filter(seed == 0)
-        ) %>% 
-      mutate(z = (modularity - mu) / sigma)
+      )
     
+     sfig_modularity_effect_size = 
+      all_censuses %>% 
+       filter(d_cutoff >= 20) %>%
+      mutate(z = (modularity - null$mu) / null$sigma) %>% 
+      ggplot(aes(factor(d_cutoff), z)) + 
+      geom_boxplot(fill = 'plum4') +
+      labs(
+        x = 'distance cutoff (m)', 
+        y = 'modularity effect size'
+      ) +
+       theme(aspect.ratio = 1)
+     
+     value = 
+       all_censuses %>% 
+       mutate(z = (modularity - null$mu) / null$sigma) %>% 
+       filter(census == 7, d_cutoff == 20) %>%
+       select(algorithm, weighted, census, d_cutoff, modularity, z) %>%
+       unique()
     
 
   }
   
+  fignames = 
+    c(
+      paste0('fig',1:4), 
+      ls(pattern = 'sfig_*')[-c(1, 2)]
+    )
   
+  # for(figname in fignames){
+  #   fig = get(figname)
+  #   png(
+  #     file = 
+  #       paste0(
+  #         'c:/users/rdand/Google Drive/GitHub/Spatial-niche/Manuscript/Figures/',
+  #         figname,
+  #         '.png'
+  #       ),
+  #         width = 1000,
+  #         height = 500 
+  #   )
+  #   fig %>% show
+  #   dev.off()
+  # }
+  # 
 }
 
 ## ============ OLD CODE ============
