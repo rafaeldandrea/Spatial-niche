@@ -16,13 +16,14 @@ theme_update(
 )
 
 
-do.clustering.analysis = 1
+do.clustering.analysis = 0
 do.kde.analysis = 0
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
 do.trait.analysis = 0
 do.paper.figures = 0
+do.network.analysis = 1
 
 do.data = 1
 do.plots = 0
@@ -34,12 +35,16 @@ data_directory = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/
 suffix = '?raw=true'
 
 read_datafile = 
-  function(filename){
-    readRDS(url(paste0(data_directory, fdp, filename, suffix)))
+  function(filename, manual = FALSE){
+    if(manual){
+      readRDS(filename)
+    }else{
+      readRDS(url(paste0(data_directory, fdp, filename, suffix)))  
+    } 
   }
 
-cluster_data = readRDS('~/SpatialNiche/Data/20211004/bci_clustering_analysis.rds')
-kde_full = readRDS('~/SpatialNiche/Data/20211004/bci_inferred_soiltypes.rds')
+# cluster_data = readRDS('~/SpatialNiche/Data/20211004/bci_clustering_analysis.rds')
+# kde_full = readRDS('~/SpatialNiche/Data/20211004/bci_inferred_soiltypes.rds')
 
 census_data = read_datafile('_census_data.rds')
 # cluster_data = read_datafile('_clustering_analysis.rds')
@@ -58,9 +63,9 @@ L = ifelse(fdp == 'bci', 1000, 500)
 if(do.clustering.analysis){
   
   if(do.data){
-    mypc = (Sys.info()['sysname'] == 'Windows') || (Sys.info()['sysname'] =='Darwin')
+    seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
     
-    cores = if(mypc) 4 else detectCores() - 10
+    cores = if(seawulf) detectCores() - 10 else 4
     plan(multisession, workers = cores)
     save_date = gsub('-', '', Sys.Date())
     save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
@@ -124,7 +129,7 @@ if(do.clustering.analysis){
       expand_grid(
         thecensus = thecensus,
         algorithm = 'louvain',
-        d_cutoff = seq(10, 30, by = 2),
+        d_cutoff = seq(20, 30, by = 2),
         self_loops = FALSE,
         d_step = 1e-5,
         Lx = Lx,
@@ -134,7 +139,7 @@ if(do.clustering.analysis){
         seed = 0:100
       )
     
-    chunk_size = cores
+    chunk_size = ifelse(seawulf, 15, cores) 
     
     for(piece in seq(nrow(parameters) / chunk_size)){
       
@@ -207,8 +212,11 @@ if(do.clustering.analysis){
       saveRDS(fdp_analyzed, file = filename)
     }
     
+    cluster_data = readRDS(filename)
+    filename_consistent = paste0(save_directory, 'bci_clustering_analysis_consistent.rds')
+    
     x = 
-      readRDS(filename) %>% 
+      cluster_data %>% 
       filter(seed == 0, d_cutoff >= 20) %>% 
       select(census, d_cutoff, sp, group, number_of_groups)
     
@@ -244,7 +252,7 @@ if(do.clustering.analysis){
       select(-group) %>%
       rename(group = reference_group)
     
-    saveRDS(consistent_cluster_data, filename)
+    saveRDS(consistent_cluster_data, filename_consistent)
     
   }
   
@@ -341,6 +349,41 @@ if(do.clustering.analysis){
     gridExtra::grid.arrange(plot_effect_size_colors, plot_effect_size_lines, ncol = 2)
     
   }
+  
+}
+
+if(do.network.analysis){
+  bci =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_all_censuses.rds?raw=true'
+      )
+    )
+  
+  source('https://github.com/rafaeldandrea/Spatial-niche/raw/main/Code/clustering_functions.R')
+  
+  dat = 
+    bci |>
+    filter(census == 7)
+  
+  network = 
+    dat %>%
+    adjacency_matrix_parallelDist(
+      autolinked_species_only = FALSE, 
+      d_cutoff = 20, 
+      d_step = 1e-5, 
+      Lx = 1000, 
+      Ly = 500
+    ) %>%
+    cluster_analysis(
+      algorithm = 'louvain',
+      weighted = TRUE,
+      self_loops = FALSE
+    )
+  
+  result = 
+    network %>%
+    pluck('result')
   
 }
 
