@@ -16,14 +16,14 @@ theme_update(
 )
 
 
-do.clustering.analysis = 0
+do.clustering.analysis = 1
 do.kde.analysis = 0
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
 do.trait.analysis = 0
 do.paper.figures = 0
-do.network.analysis = 1
+do.network.analysis = 0
 
 do.data = 1
 do.plots = 0
@@ -43,7 +43,7 @@ read_datafile =
     } 
   }
 
-# cluster_data = readRDS('~/SpatialNiche/Data/20211004/bci_clustering_analysis.rds')
+cluster_data = readRDS('~/SpatialNiche/Data/20211022/bci_clustering_analysis_consistent.rds')
 # kde_full = readRDS('~/SpatialNiche/Data/20211004/bci_inferred_soiltypes.rds')
 
 census_data = read_datafile('_census_data.rds')
@@ -85,36 +85,30 @@ if(do.clustering.analysis){
       
       prefix = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.full'
       suffix = '.rdata?raw=true'
+      
       bci = NULL
       for(census in 1:7){
-        bci_raw = 
-          get(load(url(paste0(prefix, census, suffix)))) %>%
-          as_tibble() %>%
-          drop_na(dbh)
-        
-        bci_sp = 
-          bci_raw %>% 
-          group_by(sp) %>% 
-          summarize(
-            baldeck_cutoff = quantile(dbh, .44),
-            baldeck_n = sum(dbh > baldeck_cutoff),
-            .groups = 'drop'
-          ) %>% 
-          inner_join(
-            bci_raw %>% 
-              count(sp)
-          )
-        
-        bci = 
-          bci %>%
+        bci %<>%
           bind_rows(
-            bci_raw %>%
-              inner_join(bci_sp) %>%
-              filter(dbh >= baldeck_cutoff) %>%
-              select(sp, gx, gy) %>%
+            get(load(url(paste0(prefix, census, suffix)))) %>%
+              as_tibble() %>%
+              drop_na(dbh) %>%
               mutate(census = census)  
           )
       }
+      
+      baldeck_cutoff = 
+        bci |>
+        group_by(sp) |>
+        summarize(
+          baldeck = quantile(dbh, .56), 
+          .group ='drop'
+        )
+      
+      dat = 
+        bci |>
+        inner_join(baldeck_cutoff) |>
+        filter(dbh > baldeck)
       
     }
     
@@ -129,12 +123,9 @@ if(do.clustering.analysis){
       expand_grid(
         thecensus = thecensus,
         algorithm = 'louvain',
-        d_cutoff = seq(20, 30, by = 2),
-        self_loops = FALSE,
-        d_step = 1e-5,
+        d_cutoff = c(10, 20, 30),
         Lx = Lx,
         Ly = 500,
-        autolinked_species_only = FALSE,
         weighted = TRUE,
         seed = 0:100
       )
@@ -154,11 +145,8 @@ if(do.clustering.analysis){
             thecensus,
             algorithm,
             d_cutoff,
-            self_loops,
-            d_step,
             Lx,
             Ly,
-            autolinked_species_only,
             weighted,
             seed
           ){
@@ -175,23 +163,18 @@ if(do.clustering.analysis){
             result = 
               dat %>%
               adjacency_matrix(
-                autolinked_species_only = autolinked_species_only, 
                 d_cutoff = d_cutoff, 
-                d_step = d_step, 
                 Lx = Lx, 
                 Ly = Ly
               ) %>%
               cluster_analysis(
                 algorithm = algorithm,
-                weighted = weighted,
-                self_loops = self_loops
+                weighted = weighted
               ) %>%
               pluck('result') %>%
               mutate(
                 census = thecensus,
                 d_cutoff = d_cutoff,
-                autolinked_species_only = autolinked_species_only,
-                d_step = d_step,
                 seed = seed
               ) %>%
               return()
@@ -217,7 +200,7 @@ if(do.clustering.analysis){
     
     x = 
       cluster_data %>% 
-      filter(seed == 0, d_cutoff >= 20) %>% 
+      filter(seed == 0) %>% 
       select(census, d_cutoff, sp, group, number_of_groups)
     
     x0 = 
@@ -389,116 +372,55 @@ if(do.network.analysis){
 
 if(do.kde.analysis){
   
-  x = 
-    cluster_data %>% 
-    filter(seed == 0, d_cutoff >= 20) %>% 
-    select(census, d_cutoff, sp, group, number_of_groups)
   
-  x0 = 
-    x %>%
-    filter(census == 7, d_cutoff == 20)
-  
-  res = NULL
-  for(rg in 1:4){
-    foo = 
-      x %>%
-      group_by(census, d_cutoff, group) %>%
+  prefix = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.full'
+  suffix = '.rdata?raw=true'
+  bci = NULL
+  for(census in 1:7){
+    bci_raw = 
+      get(load(url(paste0(prefix, census, suffix)))) %>%
+      as_tibble() %>%
+      drop_na(dbh)
+    
+    bci_sp = 
+      bci_raw %>% 
+      group_by(sp) %>% 
       summarize(
-        int = length(intersect(sp, x0 %>% filter(group == rg) %>% pull(sp))),
+        baldeck_cutoff = quantile(dbh, .44),
+        baldeck_n = sum(dbh > baldeck_cutoff),
         .groups = 'drop'
-      ) %>%
-      group_by(census, d_cutoff) %>%
-      slice_max(int, n = 1, with_ties = FALSE) %>%
-      ungroup() %>%
-      mutate(reference_group = rg) %>%
-      select(-int)
+      ) %>% 
+      inner_join(
+        bci_raw %>% 
+          count(sp)
+      )
     
-    res = 
-      res %>%
-      bind_rows(foo)
-    
+    bci = 
+      bci %>%
+      bind_rows(
+        bci_raw %>%
+          inner_join(bci_sp) %>%
+          filter(dbh >= baldeck_cutoff) %>%
+          select(sp, gx, gy) %>%
+          mutate(census = census)  
+      )
   }
   
-  consistent_cluster_data = 
-    cluster_data %>% 
-    full_join(res) %>% 
-    replace_na(list(reference_group = 5)) %>%
-    select(-group) %>%
-    rename(group = reference_group)
+  census_data = bci
   
-  
+  consistent_cluster_data = readRDS('~/SpatialNiche/Data/20211022/bci_clustering_analysis_consistent.rds')
+    
   data = 
     census_data %>% 
-    filter(dbh >= 100) %>%
     select(sp, census, gx, gy) %>%
     inner_join(
       consistent_cluster_data %>%
-        filter(d_cutoff >= 20) %>%
         filter(seed == 0) %>%
         select(sp, census, d_cutoff, group)
     ) %>%
     select(census, d_cutoff, gx, gy, group)
   
-  KernelDensityEstimation = 
-    function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
-      
-      evalpoints =
-        expand_grid(
-          x = quadrat_length / 2 + seq(0, Lx - quadrat_length, by = quadrat_length),
-          y = quadrat_length / 2 + seq(0, Ly - quadrat_length, by = quadrat_length)
-        ) %>%
-        arrange(y, x)
-      
-      dens = 
-        bivariate.density(
-          ppp(gx, gy, xrange = c(0, Lx), yrange = c(0, Ly)), 
-          h0 = quadrat_length, 
-          xy = 
-            list(
-              x = evalpoints$x,
-              y = evalpoints$y
-            )
-        )
-      
-      evalpoints %>%
-        mutate(
-          density = as.numeric(t(dens$z$v))
-        ) %>%
-        return
-    }
   
-  KDE = 
-    function(census, d_cutoff, .data){
-      
-      foo =
-        .data %>% 
-        inner_join(
-          tibble(
-            census = census,
-            d_cutoff = d_cutoff
-          )
-        ) 
-      
-      if(nrow(foo) == 0) return()
-      
-      foo %<>%
-        group_by(group) %>% 
-        summarize(
-          density = 
-            KernelDensityEstimation(gx = gx, gy = gy, Lx = 1000),
-          .groups = 'drop'
-        )
-      
-      bind_cols(
-        census = census, 
-        d_cutoff = d_cutoff, 
-        group = foo$group, 
-        foo$density
-      ) %>%
-        return()
-      
-    }
-    
   kde_full = 
     expand_grid(
       census = unique(data$census),
@@ -516,10 +438,11 @@ if(do.kde.analysis){
         group_by(census, d_cutoff, x, y) %>%
         slice_max(density, n = 1, with_ties = FALSE) %>%
         rename(soiltype = group) %>%
-        ungroup()
+        ungroup() %>%
+        select(-density)
     ) %>%
     mutate(fdp = fdp) %>%
-    mutate(soiltype = factor(soiltype, levels = c(2, 4, 1, 3, 5)))
+    mutate(soiltype = factor(soiltype, levels = c(4, 2, 3, 1, 5)))
       
 }
 
@@ -533,6 +456,37 @@ if(do.recruitment.analysis){
   seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
   cores = if(seawulf) detectCores() else 4
   plan(multisession, workers = cores)
+  
+  bci = NULL
+  for(census in 1:7){
+    bci_raw = 
+      get(load(url(paste0(prefix, census, suffix)))) %>%
+      as_tibble() %>%
+      drop_na(dbh)
+    
+    bci_sp = 
+      bci_raw %>% 
+      group_by(sp) %>% 
+      summarize(
+        baldeck_cutoff = quantile(dbh, .44),
+        baldeck_n = sum(dbh > baldeck_cutoff),
+        .groups = 'drop'
+      ) %>% 
+      inner_join(
+        bci_raw %>% 
+          count(sp)
+      )
+    
+    bci = 
+      bci %>%
+      bind_rows(
+        bci_raw %>%
+          inner_join(bci_sp) %>%
+          filter(dbh >= baldeck_cutoff) %>%
+          select(sp, gx, gy, dbh) %>%
+          mutate(census = census)  
+      )
+  }
   
   adults = 
     census_data %>%

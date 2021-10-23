@@ -292,9 +292,7 @@ adjacency_matrix_parallelDist =
 adjacency_matrix = 
   function(
     dat, 
-    autolinked_species_only, 
     d_cutoff, 
-    d_step, 
     Lx, 
     Ly
   ){
@@ -315,35 +313,7 @@ adjacency_matrix =
       inner_join(abuns, by = 'sp') %>%
       filter(n >= abundance_threshold)
     
-    ## selects species that are more correlated with *themselves* than
-    ## a hypothetical random pair of species with equal abundance
-    if(autolinked_species_only){
-      selected_species =
-        unique(dat_filtered$sp) %>%
-        map_dfr(
-          .f = function(char){
-            
-            df = 
-              dat_filtered %>%
-              filter(sp == char)
-            
-            d = parallelDist::parDist(cbind(df$gx, df$gy))
-            
-            nn12_positive = d[d > 0]
-            
-            connected =
-              mean(nn12_positive <= d_cutoff) -
-              cumulative_null_prob_threshold
-            
-            return(tibble(sp = char, keep = connected > 0))
-          }
-        ) %>%
-        filter(keep == TRUE) %>%
-        pull(sp)
-      
-    }else{
-      selected_species = unique(dat_filtered$sp)
-    }
+    selected_species = unique(dat_filtered$sp)
     
     dat_selected = 
       dat_filtered %>%
@@ -402,7 +372,6 @@ adjacency_matrix =
         parms = 
           tibble(
             distance_cutoff = d_cutoff,
-            distance_step = d_step,
             Lx = Lx,
             Ly = Ly,
             abundance_cutoff = abundance_threshold
@@ -417,8 +386,7 @@ cluster_analysis =
   function(
     A, 
     algorithm,
-    weighted,
-    self_loops
+    weighted
   ){
     
     if(!weighted){
@@ -476,7 +444,7 @@ cluster_analysis =
         adjacency_matrix, 
         weighted = weight_parameter,
         mode = 'undirected',
-        diag = self_loops
+        diag = FALSE
       )  
     
     fn = get(paste0('cluster_', algorithm))
@@ -490,7 +458,6 @@ cluster_analysis =
           name = seq(nrow(adjacency_matrix)),
           algorithm = algorithm, 
           weighted = weighted,
-          self_loops = self_loops,
           group = factor(name),
           modularity = 0,
           number_of_groups = nrow(adjacency_matrix)
@@ -503,7 +470,6 @@ cluster_analysis =
         mutate(
           algorithm = algorithm, 
           weighted = weighted,
-          self_loops = self_loops,
           group = factor(group),
           modularity = modularity(communities),
           number_of_groups = length(communities)
@@ -518,13 +484,72 @@ cluster_analysis =
         parms = 
           tibble(
             algorithm, 
-            weighted , 
-            self_loops
+            weighted
           ),
         graph = graph,
         communities = communities,
         result = result
       )
     )
+    
+  }
+
+KernelDensityEstimation = 
+  function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
+    
+    evalpoints =
+      expand_grid(
+        x = quadrat_length / 2 + seq(0, Lx - quadrat_length, by = quadrat_length),
+        y = quadrat_length / 2 + seq(0, Ly - quadrat_length, by = quadrat_length)
+      ) %>%
+      arrange(y, x)
+    
+    dens = 
+      bivariate.density(
+        ppp(gx, gy, xrange = c(0, Lx), yrange = c(0, Ly)), 
+        h0 = quadrat_length, 
+        xy = 
+          list(
+            x = evalpoints$x,
+            y = evalpoints$y
+          )
+      )
+    
+    evalpoints %>%
+      mutate(
+        density = as.numeric(t(dens$z$v))
+      ) %>%
+      return
+  }
+
+KDE = 
+  function(census, d_cutoff, .data){
+    
+    foo =
+      .data %>% 
+      inner_join(
+        tibble(
+          census = census,
+          d_cutoff = d_cutoff
+        )
+      ) 
+    
+    if(nrow(foo) == 0) return()
+    
+    foo %<>%
+      group_by(group) %>% 
+      summarize(
+        density = 
+          KernelDensityEstimation(gx = gx, gy = gy, Lx = 1000),
+        .groups = 'drop'
+      )
+    
+    bind_cols(
+      census = census, 
+      d_cutoff = d_cutoff, 
+      group = foo$group, 
+      foo$density
+    ) %>%
+      return()
     
   }
