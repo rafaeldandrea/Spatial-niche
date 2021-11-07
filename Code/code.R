@@ -43,7 +43,7 @@ read_datafile =
     } 
   }
 
-cluster_data = readRDS('~/SpatialNiche/Data/20211022/bci_clustering_analysis_consistent.rds')
+# cluster_data = readRDS('~/SpatialNiche/Data/20211022/bci_clustering_analysis_consistent.rds')
 # kde_full = readRDS('~/SpatialNiche/Data/20211004/bci_inferred_soiltypes.rds')
 
 census_data = read_datafile('_census_data.rds')
@@ -92,7 +92,7 @@ if(do.clustering.analysis){
           bind_rows(
             get(load(url(paste0(prefix, census, suffix)))) %>%
               as_tibble() %>%
-              drop_na(dbh) %>%
+              drop_na(dbh, gx, gy) %>%
               mutate(census = census)  
           )
       }
@@ -102,7 +102,7 @@ if(do.clustering.analysis){
         group_by(sp) |>
         summarize(
           baldeck = quantile(dbh, .56), 
-          .group ='drop'
+          .groups ='drop'
         )
       
       dat = 
