@@ -16,12 +16,12 @@ theme_update(
 )
 
 
-do.clustering.analysis = 1
+do.clustering.analysis = 0
 do.kde.analysis = 0
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
-do.trait.analysis = 0
+do.trait.analysis = 1
 do.paper.figures = 0
 do.network.analysis = 0
 
