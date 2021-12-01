@@ -155,9 +155,7 @@ read_all_laplanada = function(){
 adjacency_matrix_parallelDist =
   function(
     dat,
-    autolinked_species_only,
     d_cutoff,
-    d_step,
     Lx,
     Ly
   ){
@@ -179,35 +177,9 @@ adjacency_matrix_parallelDist =
       inner_join(abuns, by = 'sp') %>%
       filter(n >= abundance_threshold)
 
-    ## selects species that are more correlated with *themselves* than
-    ## a hypothetical random pair of species with equal abundance
-    if(autolinked_species_only){
-      selected_species =
-        unique(dat_filtered$sp) %>%
-        map_dfr(
-          .f = function(char){
-
-            df =
-              dat_filtered %>%
-              filter(sp == char)
-
-            d = parallelDist::parDist(cbind(df$gx, df$gy))
-
-            nn12_positive = d[d > 0]
-
-            connected =
-              mean(nn12_positive <= d_cutoff) -
-              cumulative_null_prob_threshold
-
-            return(tibble(sp = char, keep = connected > 0))
-          }
-        ) %>%
-        filter(keep == TRUE) %>%
-        pull(sp)
-
-    }else{
-      selected_species = unique(dat_filtered$sp)
-    }
+    
+    selected_species = unique(dat_filtered$sp)
+    
 
     dat_selected =
       dat_filtered %>%
@@ -278,16 +250,90 @@ adjacency_matrix_parallelDist =
         parms =
           tibble(
             distance_cutoff = d_cutoff,
-            distance_step = d_step,
             Lx = Lx,
-            Ly = Ly,
-            abundance_cutoff = abundance_threshold
+            Ly = Ly
           ),
         abundances = abuns,
         adjacency = adjacency
       )
     )
   }
+
+adjacency_matrix_parallelDist_quadrat =
+  function(
+    dat,
+    d_cutoff,
+    Lx,
+    Ly
+  ){
+    
+    ## int p(r) * dr from 0 to d*
+    cumulative_null_prob_threshold = pi * d_cutoff^2 / (Lx *Ly)
+    
+    selected_species = unique(dat$sp)
+    
+    distances =
+      dat %>%
+      select(gx, gy) %>%
+      as.matrix() %>%
+      parallelDist::parDist() %>%
+      as.numeric()
+    
+    n = nrow(dat)
+    k = which(distances <= d_cutoff) - 1
+    j = n - 2 - floor(sqrt(-8 * k + 4 * n * (n - 1) - 7) / 2.0 - 0.5)
+    i = k + j + 1 - n * (n - 1) / 2 + (n - j) * ((n - j) - 1) / 2
+    inds = j * n + i + 1
+    
+    foo =
+      tibble(
+        ind = inds,
+        distance = distances[k + 1]
+      )
+    
+    bar =
+      arrayInd(foo$ind, .dim = rep(nrow(dat), 2)) %>%
+      as_tibble %>%
+      rename(treeID1 = V1, treeID2 = V2) %>%
+      mutate(
+        sp1 = dat$sp[treeID1],
+        sp2 = dat$sp[treeID2],
+        distance = foo$distance
+      ) %>%
+      count(sp1, sp2)
+    
+    adjacency =
+      bar %>%
+      bind_rows(
+        bar %>%
+          rename(sp1 = sp2, sp2 = sp1)
+      ) %>%
+      group_by(sp1, sp2) %>%
+      summarize(pairs = sum(n), .groups = 'drop') %>%
+      left_join(
+        abuns %>%
+          rename(sp1 = sp, n1 = n),
+        by = 'sp1'
+      ) %>%
+      left_join(
+        abuns %>%
+          rename(sp2 = sp, n2 = n),
+        by = 'sp2'
+      ) %>%
+      mutate(
+        weighted = pairs / n1 / n2,
+        binary = 1 * (weighted > cumulative_null_prob_threshold)
+      ) %>%
+      select(-c(pairs, n1, n2)) %>%
+      complete(
+        sp1,
+        sp2,
+        fill = list(weighted = 0, binary = 0)
+      )
+    
+    return(adjacency)
+  }
+
 
 adjacency_matrix = 
   function(
