@@ -5,6 +5,7 @@ library(tidyverse)
 library(furrr)  ## for parallel computing
 library(parallel)  
 library(magrittr)
+library(RANN)  ## for neighbor-finding function nn2()
 
 ## pdf of the distance d between two random points in a 
 ## square of side a, from Johan Philip 2007
