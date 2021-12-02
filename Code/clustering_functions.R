@@ -145,9 +145,8 @@ read_all_laplanada = function(){
     ) %>%
     as_tibble %>%
     mutate(census = 2)
-  lap = rbind(lap1,lap2)%>%
-    filter(dbh >= 100) %>%
-    select(sp, gx, gy,census) 
+  lap = rbind(lap1,lap2) %>%
+   select(sp, gx, gy, dbh, census) 
     
   
 }
