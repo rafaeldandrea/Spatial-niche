@@ -344,7 +344,15 @@ adjacency_matrix =
           n2 = nrow(df2)
           
           distances = 
-            as.vector(nn2(with(df1,cbind(gx,gy)),with(df1,cbind(gx,gy)),k=20,treetype="kd",searchtype="radius",radius=d_cutoff)$nn.idx)
+            nn2(
+              with(df1,cbind(gx,gy)),
+              with(df2,cbind(gx,gy)),
+              k = 20,
+              treetype = "kd",
+              searchtype = "radius",
+              radius = d_cutoff
+            )$nn.idx %>%
+            as.vector()
           
           pairs = sum(distances > 0)
           

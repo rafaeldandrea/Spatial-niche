@@ -64,9 +64,12 @@ if(do.clustering.analysis){
   
   if(do.data){
     seawulf = as.logical(Sys.info()['user'] == 'rdrocha')
+    office = as.logical(Sys.info()['user'] == 'Rafael D\'Andrea')
+    laptop = as.logical(Sys.info()['user'] == 'rdand')
     
-    cores = if(seawulf) detectCores() - 10 else 4
+    cores = max(4, if(seawulf) detectCores() - 2)
     plan(multisession, workers = cores)
+    
     save_date = gsub('-', '', Sys.Date())
     save_directory = paste0('~/SpatialNiche/Data/', save_date, '/')
     
@@ -74,28 +77,14 @@ if(do.clustering.analysis){
     
     if(fdp == 'bci'){
       Lx = 1000
-      # bci =
-      #   readRDS(
-      #     url(
-      #       'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci_all_censuses.rds?raw=true'
-      #     )
-      #   )
       filename = paste0(save_directory, 'bci_clustering_analysis.rds')
-      thecensus=1:7
       
-      prefix = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.full'
-      suffix = '.rdata?raw=true'
-      
-      bci = NULL
-      for(census in 1:7){
-        bci %<>%
-          bind_rows(
-            get(load(url(paste0(prefix, census, suffix)))) %>%
-              as_tibble() %>%
-              drop_na(dbh, gx, gy) %>%
-              mutate(census = census)  
+      bci = 
+        readRDS(
+          url(
+            'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bcifullcensus.rds?raw=true'
           )
-      }
+        )
       
       baldeck_cutoff = 
         bci |>
@@ -108,7 +97,8 @@ if(do.clustering.analysis){
       dat = 
         bci |>
         inner_join(baldeck_cutoff) |>
-        filter(dbh > baldeck)
+        filter(dbh > baldeck) |>
+        mutate(fdp = 'bci')
       
     }
     
@@ -116,7 +106,20 @@ if(do.clustering.analysis){
       Lx = 500
       bci  = read_all_laplanada()
       filename = paste0(save_directory, 'lap_clustering_analysis.rds')
-      thecensus = 1:2
+      
+      baldeck_cutoff = 
+        bci |>
+        group_by(sp) |>
+        summarize(
+          baldeck = quantile(dbh, .56), 
+          .groups ='drop'
+        )
+      
+      dat = 
+        bci |>
+        inner_join(baldeck_cutoff) |>
+        filter(dbh > baldeck) |>
+        mutate(fdp = 'lap')
     }
     
     parameters = 
@@ -127,73 +130,64 @@ if(do.clustering.analysis){
         Lx = Lx,
         Ly = 500,
         weighted = TRUE,
-        seed = 0:100
+        seed = 0
       )
     
-    chunk_size = ifelse(seawulf, 15, cores) 
+    fdp_analyzed = 
+      parameters %>%
+      future_pmap_dfr(
+        .f = function(
+          thecensus,
+          algorithm,
+          d_cutoff,
+          Lx,
+          Ly,
+          weighted,
+          seed
+        ){
+          
+          dat =
+            bci %>%
+            filter(census == thecensus)
+          
+          if(seed > 0){
+            dat %<>%
+              mutate(sp = sample(sp))
+          }
+          
+          result = 
+            dat %>%
+            adjacency_matrix(
+              d_cutoff = d_cutoff, 
+              Lx = Lx, 
+              Ly = Ly
+            ) %>%
+            cluster_analysis(
+              algorithm = algorithm,
+              weighted = weighted
+            ) %>%
+            pluck('result') %>%
+            mutate(
+              census = thecensus,
+              d_cutoff = d_cutoff,
+              seed = seed
+            ) %>%
+            return()
+        },
+        .options = furrr_options(seed = TRUE)
+      ) %>%
+      rename(sp = name)
     
-    for(piece in seq(nrow(parameters) / chunk_size)){
-      
-      indices = chunk_size * (piece - 1) + seq(chunk_size)
-      
-      parms = parameters[indices, ]
-      
-      fdp_analyzed = 
-        parms %>%
-        future_pmap_dfr(
-          .f = function(
-            thecensus,
-            algorithm,
-            d_cutoff,
-            Lx,
-            Ly,
-            weighted,
-            seed
-          ){
-            
-            dat =
-              bci %>%
-              filter(census == thecensus)
-            
-            if(seed > 0){
-              dat %<>%
-                mutate(sp = sample(sp))
-            }
-            
-            result = 
-              dat %>%
-              adjacency_matrix(
-                d_cutoff = d_cutoff, 
-                Lx = Lx, 
-                Ly = Ly
-              ) %>%
-              cluster_analysis(
-                algorithm = algorithm,
-                weighted = weighted
-              ) %>%
-              pluck('result') %>%
-              mutate(
-                census = thecensus,
-                d_cutoff = d_cutoff,
-                seed = seed
-              ) %>%
-              return()
-          },
-          .options = furrr_options(seed = TRUE)
-        ) %>%
-        rename(sp = name)
-      
-      dir.create(save_directory, showWarnings = FALSE)
-      
-      
-      if(file.exists(filename)){
-        fdp_analyzed = 
-          readRDS(filename) %>%
-          bind_rows(fdp_analyzed)
-      }
-      
-      saveRDS(fdp_analyzed, file = filename)
-    }
+    if(seawulf) dir.create(save_directory, showWarnings = FALSE)
+    
+    
+    # if(file.exists(filename)){
+    #   fdp_analyzed = 
+    #     readRDS(filename) %>%
+    #     bind_rows(fdp_analyzed)
+    # }
+    
+    if(seawulf) saveRDS(fdp_analyzed, file = filename)
     
     cluster_data = readRDS(filename)
     filename_consistent = paste0(save_directory, 'bci_clustering_analysis_consistent.rds')
