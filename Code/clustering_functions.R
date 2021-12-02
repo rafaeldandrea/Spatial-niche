@@ -1,10 +1,11 @@
 library(parallelDist) ## for function parDist()
 library(igraph) ## to convert the adjacency matrix constructed from the pairs connected into 
-                ## a graph then find communities in the graph
+## a graph then find communities in the graph
 library(tidyverse)
 library(furrr)  ## for parallel computing
 library(parallel)  
 library(magrittr)
+library(RANN)  ## for neighbor-finding function nn2()
 
 ## pdf of the distance d between two random points in a 
 ## square of side a, from Johan Philip 2007
@@ -112,8 +113,7 @@ read_laplanada = function(census){
       header = TRUE
     ) %>%
     as_tibble %>%
-    filter(dbh >= 100) %>%
-    select(sp, gx, gy)
+    select(sp, gx, dbh, gy)
   
 }
 
@@ -145,64 +145,92 @@ read_all_laplanada = function(){
     ) %>%
     as_tibble %>%
     mutate(census = 2)
-  lap = rbind(lap1,lap2) %>%
-   select(sp, gx, gy, dbh, census) 
-    
+  lap = rbind(lap1,lap2)%>%
+    select(sp, gx, gy, dbh, census) 
+  
   
 }
 
 adjacency_matrix_parallelDist =
   function(
     dat,
+    autolinked_species_only,
     d_cutoff,
+    d_step,
     Lx,
     Ly
   ){
-
+    
     ## int p(r) * dr from 0 to d*
     cumulative_null_prob_threshold = pi * d_cutoff^2 / (Lx *Ly)
-
+    
     ## abundance cutoff based on E[n] >= 1, where n is the number of pairs
     ## within a circle of radius d*
     abundance_threshold = round(sqrt(1 / cumulative_null_prob_threshold))
-
+    
     abuns =
       dat %>%
       count(sp) %>%
       arrange(desc(n))
-
+    
     dat_filtered =
       dat %>%
       inner_join(abuns, by = 'sp') %>%
       filter(n >= abundance_threshold)
-
     
-    selected_species = unique(dat_filtered$sp)
+    ## selects species that are more correlated with *themselves* than
+    ## a hypothetical random pair of species with equal abundance
+    if(autolinked_species_only){
+      selected_species =
+        unique(dat_filtered$sp) %>%
+        map_dfr(
+          .f = function(char){
+            
+            df =
+              dat_filtered %>%
+              filter(sp == char)
+            
+            d = parallelDist::parDist(cbind(df$gx, df$gy))
+            
+            nn12_positive = d[d > 0]
+            
+            connected =
+              mean(nn12_positive <= d_cutoff) -
+              cumulative_null_prob_threshold
+            
+            return(tibble(sp = char, keep = connected > 0))
+          }
+        ) %>%
+        filter(keep == TRUE) %>%
+        pull(sp)
+      
+    }else{
+      selected_species = unique(dat_filtered$sp)
+    }
     
-
     dat_selected =
       dat_filtered %>%
       filter(sp %in% selected_species)
-
+    
     distances =
       dat_selected %>%
       select(gx, gy) %>%
       as.matrix() %>%
       parallelDist::parDist() %>%
       as.numeric()
-
+    
     n = nrow(dat_selected)
     k = which(distances <= d_cutoff) - 1
     j = n - 2 - floor(sqrt(-8 * k + 4 * n * (n - 1) - 7) / 2.0 - 0.5)
     i = k + j + 1 - n * (n - 1) / 2 + (n - j) * ((n - j) - 1) / 2
     inds = j * n + i + 1
-
+    
     foo =
       tibble(
         ind = inds,
         distance = distances[k + 1]
       )
-
+    
     bar =
       arrayInd(foo$ind, .dim = rep(nrow(dat_selected), 2)) %>%
       as_tibble %>%
@@ -213,7 +241,7 @@ adjacency_matrix_parallelDist =
         distance = foo$distance
       ) %>%
       count(sp1, sp2)
-
+    
     adjacency =
       bar %>%
       bind_rows(
@@ -242,95 +270,22 @@ adjacency_matrix_parallelDist =
         sp2,
         fill = list(weighted = 0, binary = 0)
       )
-
+    
     return(
       list(
         dat = dat,
         parms =
           tibble(
             distance_cutoff = d_cutoff,
+            distance_step = d_step,
             Lx = Lx,
-            Ly = Ly
+            Ly = Ly,
+            abundance_cutoff = abundance_threshold
           ),
         abundances = abuns,
         adjacency = adjacency
       )
     )
-  }
-
-adjacency_matrix_parallelDist_quadrat =
-  function(
-    dat,
-    d_cutoff,
-    Lx,
-    Ly
-  ){
-    
-    ## int p(r) * dr from 0 to d*
-    cumulative_null_prob_threshold = pi * d_cutoff^2 / (Lx *Ly)
-    
-    selected_species = unique(dat$sp)
-    
-    distances =
-      dat %>%
-      select(gx, gy) %>%
-      as.matrix() %>%
-      parallelDist::parDist() %>%
-      as.numeric()
-    
-    n = nrow(dat)
-    k = which(distances <= d_cutoff) - 1
-    j = n - 2 - floor(sqrt(-8 * k + 4 * n * (n - 1) - 7) / 2.0 - 0.5)
-    i = k + j + 1 - n * (n - 1) / 2 + (n - j) * ((n - j) - 1) / 2
-    inds = j * n + i + 1
-    
-    foo =
-      tibble(
-        ind = inds,
-        distance = distances[k + 1]
-      )
-    
-    bar =
-      arrayInd(foo$ind, .dim = rep(nrow(dat), 2)) %>%
-      as_tibble %>%
-      rename(treeID1 = V1, treeID2 = V2) %>%
-      mutate(
-        sp1 = dat$sp[treeID1],
-        sp2 = dat$sp[treeID2],
-        distance = foo$distance
-      ) %>%
-      count(sp1, sp2)
-    
-    adjacency =
-      bar %>%
-      bind_rows(
-        bar %>%
-          rename(sp1 = sp2, sp2 = sp1)
-      ) %>%
-      group_by(sp1, sp2) %>%
-      summarize(pairs = sum(n), .groups = 'drop') %>%
-      left_join(
-        abuns %>%
-          rename(sp1 = sp, n1 = n),
-        by = 'sp1'
-      ) %>%
-      left_join(
-        abuns %>%
-          rename(sp2 = sp, n2 = n),
-        by = 'sp2'
-      ) %>%
-      mutate(
-        weighted = pairs / n1 / n2,
-        binary = 1 * (weighted > cumulative_null_prob_threshold)
-      ) %>%
-      select(-c(pairs, n1, n2)) %>%
-      complete(
-        sp1,
-        sp2,
-        fill = list(weighted = 0, binary = 0)
-      )
-    
-    return(adjacency)
   }
 
 
@@ -356,7 +311,7 @@ adjacency_matrix =
     dat_filtered = 
       dat %>%
       inner_join(abuns, by = 'sp') %>%
-      filter(n >= abundance_threshold)
+      filter(n >= abundance_threshold, !is.na(gx), !is.na(gy))
     
     selected_species = unique(dat_filtered$sp)
     
@@ -389,19 +344,16 @@ adjacency_matrix =
           n2 = nrow(df2)
           
           distances = 
-            pdist::pdist(
-              X = with(df1, cbind(gx, gy)),
-              Y = with(df2, cbind(gx, gy))
-            )@dist
+            as.vector(nn2(with(df1,cbind(gx,gy)),with(df1,cbind(gx,gy)),k=20,treetype="kd",searchtype="radius",radius=d_cutoff)$nn.idx)
           
-          pairs = sum(distances <= d_cutoff)
+          pairs = sum(distances > 0)
           
           tibble(
             sp1 = sp1, 
             sp2 = sp2, 
             weighted = (pairs / (n1 * n2)) / cumulative_null_prob_threshold,
             binary = 1 * (weighted > 1)
-          )
+          ) 
         }
       )
     
@@ -409,7 +361,7 @@ adjacency_matrix =
       bind_rows(
         adjacency %>% 
           rename(sp1 = sp2, sp2 = sp1)
-        )
+      )
     
     return(
       list(
@@ -426,6 +378,7 @@ adjacency_matrix =
       )
     )
   }
+
 
 cluster_analysis = 
   function(
@@ -538,6 +491,7 @@ cluster_analysis =
     )
     
   }
+
 
 KernelDensityEstimation = 
   function(gx, gy, Lx = L, Ly = 500, quadrat_length = 20, ...){
