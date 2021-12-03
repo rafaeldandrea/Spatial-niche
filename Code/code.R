@@ -124,14 +124,19 @@ if(do.clustering.analysis){
     
     parameters = 
       expand_grid(
-        thecensus = thecensus,
+        thecensus = 
+          dat |>
+          pull(census) |>
+          unique(),
         algorithm = 'louvain',
         d_cutoff = c(10, 20, 30),
         Lx = Lx,
         Ly = 500,
         weighted = TRUE,
-        seed = 0
-      )
+        seed = 0:100
+      ) |>
+      filter(thecensus == 8 | d_cutoff == 20) |>
+      filter(thecensus == 8 | seed == 0)
     
     fdp_analyzed = 
       parameters %>%
@@ -146,17 +151,17 @@ if(do.clustering.analysis){
           seed
         ){
           
-          dat =
-            bci %>%
+          data =
+            dat %>%
             filter(census == thecensus)
           
           if(seed > 0){
-            dat %<>%
+            data %<>%
               mutate(sp = sample(sp))
           }
           
           result = 
-            dat %>%
+            data %>%
             adjacency_matrix(
               d_cutoff = d_cutoff, 
               Lx = Lx, 
@@ -199,7 +204,7 @@ if(do.clustering.analysis){
     
     x0 = 
       x %>%
-      filter(census == 7, d_cutoff == 20)
+      filter(census == 8, d_cutoff == 20)
     
     res = NULL
     for(rg in 1:4){

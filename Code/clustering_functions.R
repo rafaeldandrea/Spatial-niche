@@ -294,7 +294,9 @@ adjacency_matrix =
     dat, 
     d_cutoff, 
     Lx, 
-    Ly
+    Ly,
+    method = 'ann',
+    num_neighbors = 300
   ){
     ## int p(r) * dr from 0 to d*
     cumulative_null_prob_threshold = pi * d_cutoff^2 / (Lx *Ly)
@@ -343,19 +345,27 @@ adjacency_matrix =
           
           n2 = nrow(df2)
           
-          distances = 
-            nn2(
-              with(df1,cbind(gx,gy)),
-              with(df2,cbind(gx,gy)),
-              k = 20,
-              treetype = "kd",
-              searchtype = "radius",
-              radius = d_cutoff
-            )$nn.idx %>%
-            as.vector()
+          if(method == 'ann'){
+            distances =
+              nn2(
+                with(df1,cbind(gx,gy)),
+                with(df2,cbind(gx,gy)),
+                k = min(n1, num_neighbors),
+                treetype = "kd",
+                searchtype = "radius",
+                radius = d_cutoff
+              )$nn.dists %>%
+              as.vector()
+          }else if(method == 'pdist'){
+            distances = 
+              pdist::pdist(
+                X = with(df1, cbind(gx, gy)),
+                Y = with(df2, cbind(gx, gy))
+              )@dist
+          } else stop('Need a valid method to calculate neighbors')
           
-          pairs = sum(distances > 0)
-          
+          pairs = sum(distances <= d_cutoff)
+         
           tibble(
             sp1 = sp1, 
             sp2 = sp2, 
