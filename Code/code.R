@@ -5,7 +5,7 @@ library(parallel)
 library(parallelDist) ## function parDist(X) calculates distances between rows of matrix X
 library(pdist) ## for function pdist(X, Y), calculates distances between rows of matrices X and Y
 library(readxl)
-library(pcaMethods)
+# library(pcaMethods)
 library(sparr) # for function bivariate.density() in KDE()
 
 
