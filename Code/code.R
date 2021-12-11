@@ -1136,13 +1136,6 @@ if(do.cfa.analysis){
     group_by(x, y) |> 
     summarize(elevation = mean(elev), .groups = 'drop') 
   
-  nutrients =
-    readRDS(
-      url(
-        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_nutrient_data.rds?raw=true'
-      )
-    )
-  
   water = 
     read.table(
       url(
@@ -1159,67 +1152,156 @@ if(do.cfa.analysis){
     group_by(x, y) |> 
     summarize(water = mean(swp), .groups = 'drop') 
   
+  nutrients =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_nutrient_data.rds?raw=true'
+      )
+    )
+  
+  pc_nutrients = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  pc_cations = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn, Al, P) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  pc_chemistry = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn, Al, P, pH) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
   data = 
     nutrients |>
     full_join(water) |>
     full_join(elevation) |>
-    full_join(plants) |> 
+    full_join(plants) |>
+    bind_cols(
+      pc_nutrients@scores |> 
+        as_tibble() |> 
+        transmute(nutrients = scale(PC1)[,1])
+    ) |>
+    bind_cols(
+      pc_cations@scores |> 
+        as_tibble() |> 
+        transmute(cations = scale(PC1)[,1])
+    ) |>
+    bind_cols(
+      pc_chemistry@scores |> 
+        as_tibble() |> 
+        transmute(chemistry = scale(PC1)[,1])
+    ) |> 
     mutate(
       across(
-        Al:g4, 
-        function(x) scale(x, scale = TRUE)[,1]
+        Al:chemistry, 
+        function(x) scale(x)[,1]
       )
     )
   
-  model1 = 
-    '
-    # latent variables
-    chemistry =~ B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + `N(min)` + Al + pH
-    physiography =~ water + elevation
-    
-    # regressions
-    g1 + g2 + g3 + g4 ~ chemistry + physiography
-    chemistry ~ water
-    water ~ elevation
-  '
+  # pc_loadings =
+  #   pc@loadings |>
+  #   as_tibble() |>
+  #   mutate(nutrient = rownames(pc@loadings)) |>
+  #   pivot_longer(-nutrient, names_to = 'component')
+
+  # pc_loadings|>
+  #   ggplot(aes(nutrient, abs(value), fill = nutrient)) +
+  #   geom_col() +
+  #   facet_wrap(~component) +
+  #   theme(legend.position = 'none')
+  #
+  # pc_loadings|>
+  #   ggplot(aes(component, abs(value), fill = component)) +
+  #   geom_col() +
+  #   facet_wrap(~nutrient) +
+  #   theme(legend.position = 'none')
   
-  model2 = 
-    '
-    # latent variables
-    nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)` 
-    physiochemistry =~ water + elevation + Al + B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + `N(min)` + pH
-    
-    # regressions
-    g1 + g2 + g3 + g4 ~ nutrients + water + P + Al + pH
-    nutrients + pH + Al + P ~ water
-    water ~ elevation
-  '
+  models = 
+    list(
+       
+        '
+          g1 + g2 + g3 + g4 ~ nutrients + water + P + Al + pH
+        ',
+        
+        '
+          nutrients + P ~ g1 + g2 + g3 + g4 + water + pH
+        ',
+      
+        '
+          nutrients + P ~ g1 + g2 + g3 + g4
+        ',
+        
+        
+        
+        '
+          g1 + g2 + g3 + g4 ~ cations + water + pH
+        ',
+        
+        '
+          cations ~ g1 + g2 + g3 + g4 + water + pH
+        ',
+        
+        '
+          cations ~ g1 + g2 + g3 + g4
+        ',
+        
+        
+        
+        '
+          g1 + g2 + g3 + g4 ~ chemistry + water
+        ',
+        
+        '
+          chemistry ~ g1 + g2 + g3 + g4 + water
+        ',
+        
+        '
+          chemistry ~ g1 + g2 + g3 + g4
+        '
+        
+        
+        # '
+        #   correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+        #   g1 + g2 + g3 + g4 ~ correlated_nutrients + Al + P + pH + water
+        # ',
+        # 
+        # '
+        #   correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+        #   correlated_nutrients + P ~ g1 + g2 + g3 + g4 + pH + water
+        # '
+       
+    )
   
-  result1 = cfa(model = model1, data = data)
-  result2 = cfa(model = model2, data = data)
+  names(models) = paste0('model', 1:length(models))
   
-  covariates = c('nutrients', 'water', 'P', 'Al', 'pH')
-  coefs = 
-    sapply(covariates, function(covariate){
-      coef(result2)[names(coef(result2)) %in% paste0('g', 1:4, '~', covariate)]  
-    }) |>
+  fit = lapply(models, cfa, data = data)
+  
+  measures = sapply(fit, fitMeasures)
+  measures = 
+    measures |>
     as_tibble() |>
-    mutate(group = paste0('g', 1:4)) |>
-    select(group, everything())
+    mutate(measure = rownames(measures)) |>
+    select(measure, everything()) |>
+    filter(measure %in% c('chisq', 'cfi', 'tli', 'rfi', 'aic','rmsea', 'rmr', 'srmr')) |>
+    pivot_longer(-measure, names_to = 'model')
   
-  plot_pairwise_ggplot = 
-    coefs |> 
-    ggplot(aes(nutrients, P, color = group)) + 
-    geom_point() +
-    geom_hline(yintercept = 0) +
-    geom_vline(xintercept = 0)
+  plot_measures = 
+    measures |> 
+    ggplot(aes(value, model, fill = model)) + 
+    geom_col() + 
+    facet_wrap(~measure, scales = 'free') +
+    theme(legend.position = 'none')
   
-  plot_pairwise = 
-    coefs |> 
-    ggpairs(columns = 2:ncol(coefs)) + 
-    geom_hline(yintercept = 0, color = 'gray') + 
-    geom_vline(xintercept = 0, color = 'gray')
-  
+  # 
+  # plot_pairwise = 
+  #   coefs |> 
+  #   ggpairs(columns = 2:ncol(coefs)) + 
+  #   geom_hline(yintercept = 0, color = 'gray') + 
+  #   geom_vline(xintercept = 0, color = 'gray')
+  # 
   plot_normality = 
     data |> 
     pivot_longer(-c(x,y), names_to = 'index') |> 
