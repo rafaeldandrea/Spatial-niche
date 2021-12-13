@@ -1201,6 +1201,20 @@ if(do.cfa.analysis){
       )
     )
   
+  x = psych::fa.parallel(data |> select(Al:water)) # suggests 4 components
+  
+  pc_soil = 
+    data |>
+    select(Al:water) |>
+    pcaMethods::pca(nPcs = 4, scale = 'uv', center = TRUE)
+  
+  pc_soil@loadings |> 
+    as_tibble() |> 
+    mutate(feature = rownames(pc_soil@loadings)) |> 
+    ggplot(aes(abs(PC1), abs(PC2), label = feature)) + 
+    geom_text()
+    
+  
   # pc_loadings =
   #   pc@loadings |>
   #   as_tibble() |>
@@ -1260,18 +1274,36 @@ if(do.cfa.analysis){
         
         '
           chemistry ~ g1 + g2 + g3 + g4
+        ',
+        
+        
         '
+          correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+          g1 + g2 + g3 + g4 ~ correlated_nutrients + Al + P + pH + water
+        ',
+
+        '
+          correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+          correlated_nutrients + P ~ g1 + g2 + g3 + g4 + pH + water
+        ',
         
+        '
+          LV1 =~ B + Ca + Cu + Fe + K + Mg + Mn + `N(min)` + Zn
+          LV2 =~ P + N + elevation
+          LV3 =~ water + Al
+          LV4 =~ pH
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        ',
         
-        # '
-        #   correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
-        #   g1 + g2 + g3 + g4 ~ correlated_nutrients + Al + P + pH + water
-        # ',
-        # 
-        # '
-        #   correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
-        #   correlated_nutrients + P ~ g1 + g2 + g3 + g4 + pH + water
-        # '
+        '
+          LV1 =~ B + Ca + Cu + K + Mg + `N(min)` + Zn
+          LV2 =~ Fe + Mn + pH
+          LV3 =~ P + water + Al
+          LV4 =~ N
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        '
        
     )
   
@@ -1295,13 +1327,20 @@ if(do.cfa.analysis){
     facet_wrap(~measure, scales = 'free') +
     theme(legend.position = 'none')
   
-  # 
-  # plot_pairwise = 
-  #   coefs |> 
-  #   ggpairs(columns = 2:ncol(coefs)) + 
-  #   geom_hline(yintercept = 0, color = 'gray') + 
-  #   geom_vline(xintercept = 0, color = 'gray')
-  # 
+  coefs =
+    # matrix(coef(fit[[10]])[1:20], 4, ) |>
+    matrix(coef(fit[[10]])[11:30], 4, ) |>
+    as_tibble() |>
+    mutate(group = paste0('g', 1:4)) |>
+    rename(nutrients = V1, water = V2, P = V3, Al = V4, pH = V5) |>
+    select(group, everything())
+
+  plot_pairwise =
+    coefs |>
+    ggpairs(columns = 2:ncol(coefs)) +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray')
+
   plot_normality = 
     data |> 
     pivot_longer(-c(x,y), names_to = 'index') |> 
