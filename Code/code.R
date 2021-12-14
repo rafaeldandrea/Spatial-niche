@@ -16,14 +16,16 @@ theme_update(
 )
 
 
-do.clustering.analysis = 1
+do.clustering.analysis = 0
 do.kde.analysis = 0
+do.cfa.analysis = 1
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
 do.trait.analysis = 0
 do.paper.figures = 0
 do.network.analysis = 0
+
 
 do.data = 1
 do.plots = 0
@@ -370,6 +372,22 @@ if(do.network.analysis){
 }
 
 if(do.kde.analysis){
+  
+  #label the folder "bci_dryad.zip"
+  
+  raw.files = paste0('https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.tree',1:8,'.rdata?raw=true')
+  dir<-getwd()
+  setwd(paste0(dir,"/","bci_dryad"))
+  raw.files<-list.files()
+  #Load data from DRYAD datasets: Census 7
+  mydat<- lapply(raw.files, function(x) {
+    load(file = url(x))
+    get(ls()[ls()!= "filename"])
+  })
+  setwd(dir)
+  all <- do.call("rbind", mydat)%>%tibble()
+  bci<-all%>%mutate(census=rep(1:8,sapply(mydat, nrow)))
+  bci<-bci%>%select(sp,gx,gy,dbh,census)%>%drop_na()
   
   
   prefix = 'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/bci.full'
@@ -1080,6 +1098,290 @@ if(do.nutrient.analysis){
   }
   
 }  
+
+## confirmatory factor analysis
+if(do.cfa.analysis){
+  
+  library(lavaan)
+  library(GGally)
+  
+  plants = 
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/20211205/20211205_kde_full.rds?raw=true'
+      )
+    ) |>
+    filter(
+      census == 8,
+      d_cutoff == 20
+    ) |>
+    select(
+      x, y, group, density
+    ) |>
+    pivot_wider(names_from = group, values_from = density)
+  
+  names(plants) = c('x', 'y', 'g1', 'g2', 'g3', 'g4')
+  
+  elevation = 
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bcielevation.rds?raw=true'
+      )
+    ) |> 
+    mutate(
+      x = seq(10, 990, 20)[cut(x, breaks = seq(0, 1000, 20), labels = FALSE)], 
+      y = seq(10, 490, 20)[cut(y, breaks = seq(0, 500, 20), labels = FALSE)]
+    ) |> 
+    replace_na(list(x = 10, y = 10)) |> 
+    group_by(x, y) |> 
+    summarize(elevation = mean(elev), .groups = 'drop') 
+  
+  water = 
+    read.table(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/raw/main/Data/BCI_SWP_map_mid_dry_season_regular.txt'
+      ),
+      header = TRUE
+    ) |>
+    as_tibble() |>
+    mutate(
+      x = seq(10, 990, 20)[cut(x, breaks = seq(0, 1000, 20), labels = FALSE)], 
+      y = seq(10, 490, 20)[cut(y, breaks = seq(0, 500, 20), labels = FALSE)]
+    ) |> 
+    replace_na(list(x = 10, y = 10)) |> 
+    group_by(x, y) |> 
+    summarize(water = mean(swp), .groups = 'drop') 
+  
+  nutrients =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_nutrient_data.rds?raw=true'
+      )
+    )
+  
+  pc_nutrients = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  pc_cations = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn, Al, P) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  pc_chemistry = 
+    nutrients |> 
+    select(B, Ca, Cu, Fe, K, Mg, Mn, N, `N(min)`, Zn, Al, P, pH) |> 
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  data = 
+    nutrients |>
+    full_join(water) |>
+    full_join(elevation) |>
+    full_join(plants) |>
+    bind_cols(
+      pc_nutrients@scores |> 
+        as_tibble() |> 
+        transmute(nutrients = scale(PC1)[,1])
+    ) |>
+    bind_cols(
+      pc_cations@scores |> 
+        as_tibble() |> 
+        transmute(cations = scale(PC1)[,1])
+    ) |>
+    bind_cols(
+      pc_chemistry@scores |> 
+        as_tibble() |> 
+        transmute(chemistry = scale(PC1)[,1])
+    ) |> 
+    mutate(
+      across(
+        Al:chemistry, 
+        function(x) scale(x)[,1]
+      )
+    )
+  
+  x = psych::fa.parallel(data |> select(Al:water)) # suggests 4 components
+  
+  pc_soil = 
+    data |>
+    select(Al:water) |>
+    pcaMethods::pca(nPcs = 4, scale = 'uv', center = TRUE)
+  
+  pc_soil@loadings |> 
+    as_tibble() |> 
+    mutate(feature = rownames(pc_soil@loadings)) |> 
+    ggplot(aes(abs(PC1), abs(PC2), label = feature)) + 
+    geom_text()
+    
+  
+  # pc_loadings =
+  #   pc@loadings |>
+  #   as_tibble() |>
+  #   mutate(nutrient = rownames(pc@loadings)) |>
+  #   pivot_longer(-nutrient, names_to = 'component')
+
+  # pc_loadings|>
+  #   ggplot(aes(nutrient, abs(value), fill = nutrient)) +
+  #   geom_col() +
+  #   facet_wrap(~component) +
+  #   theme(legend.position = 'none')
+  #
+  # pc_loadings|>
+  #   ggplot(aes(component, abs(value), fill = component)) +
+  #   geom_col() +
+  #   facet_wrap(~nutrient) +
+  #   theme(legend.position = 'none')
+  
+  models = 
+    list(
+       
+        '
+          g1 + g2 + g3 + g4 ~ nutrients + water + P + Al + pH
+        ',
+        
+        '
+          nutrients + P ~ g1 + g2 + g3 + g4 + water + pH
+        ',
+      
+        '
+          nutrients + P ~ g1 + g2 + g3 + g4
+        ',
+        
+        
+        
+        '
+          g1 + g2 + g3 + g4 ~ cations + water + pH
+        ',
+        
+        '
+          cations ~ g1 + g2 + g3 + g4 + water + pH
+        ',
+        
+        '
+          cations ~ g1 + g2 + g3 + g4
+        ',
+        
+        
+        
+        '
+          g1 + g2 + g3 + g4 ~ chemistry + water
+        ',
+        
+        '
+          chemistry ~ g1 + g2 + g3 + g4 + water
+        ',
+        
+        '
+          chemistry ~ g1 + g2 + g3 + g4
+        ',
+        
+        
+        '
+          correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+          g1 + g2 + g3 + g4 ~ correlated_nutrients + Al + P + pH + water
+        ',
+
+        '
+          correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
+          correlated_nutrients + P ~ g1 + g2 + g3 + g4 + pH + water
+        ',
+        
+        '
+          LV1 =~ B + Ca + Cu + Fe + K + Mg + Mn + `N(min)` + Zn
+          LV2 =~ P + N + elevation
+          LV3 =~ water + Al
+          LV4 =~ pH
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        ',
+        
+        '
+          LV1 =~ B + Ca + Cu + K + Mg + `N(min)` + Zn
+          LV2 =~ Fe + Mn + pH
+          LV3 =~ P + water + Al
+          LV4 =~ N
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        '
+       
+    )
+  
+  names(models) = paste0('model', 1:length(models))
+  
+  fit = lapply(models, cfa, data = data)
+  
+  measures = sapply(fit, fitMeasures)
+  measures = 
+    measures |>
+    as_tibble() |>
+    mutate(measure = rownames(measures)) |>
+    select(measure, everything()) |>
+    filter(measure %in% c('chisq', 'cfi', 'tli', 'rfi', 'aic','rmsea', 'rmr', 'srmr')) |>
+    pivot_longer(-measure, names_to = 'model')
+  
+  plot_measures = 
+    measures |> 
+    ggplot(aes(value, model, fill = model)) + 
+    geom_col() + 
+    facet_wrap(~measure, scales = 'free') +
+    theme(legend.position = 'none')
+  
+  coefs =
+    # matrix(coef(fit[[10]])[1:20], 4, ) |>
+    matrix(coef(fit[[10]])[11:30], 4, ) |>
+    as_tibble() |>
+    mutate(group = paste0('g', 1:4)) |>
+    rename(nutrients = V1, water = V2, P = V3, Al = V4, pH = V5) |>
+    select(group, everything())
+
+  plot_pairwise =
+    coefs |>
+    ggpairs(columns = 2:ncol(coefs)) +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray')
+
+  plot_normality = 
+    data |> 
+    pivot_longer(-c(x,y), names_to = 'index') |> 
+    ggplot(aes(value)) + 
+    facet_wrap(~index) + 
+    geom_histogram(binwidth = .1) + 
+    geom_line(
+      aes(x, y), 
+      data = 
+        tibble(
+          x = seq(-5,5,.01), 
+          y = 1250 *.1 * dnorm(x)
+        ), 
+      color = 'red'
+    ) +
+    ylab('Density')
+  
+  plot1 =
+    data |> 
+    select(x, y, g1, g2, g3, g4) |> 
+    pivot_longer(-c(x, y), names_to = 'group', values_to = 'density') |>
+    ggplot(aes(x, y, fill = density)) +
+    geom_tile() +
+    theme(aspect.ratio = .5) +
+    scale_fill_gradientn(colors = terrain.colors(2000)) +
+    facet_wrap(~group)
+  
+  plot2 = 
+    plants |> 
+    pivot_longer(
+      -c(x, y), 
+      names_to = 'group', 
+      values_to = 'density'
+    ) |> 
+    group_by(x, y) |> 
+    slice_max(density) |> 
+    ungroup() |> 
+    ggplot(aes(x, y, fill = group)) + 
+    geom_tile() + 
+    theme(aspect.ratio = .5)
+}
 
 ## test C5.0 on Gaussian random field
 if(do.C5.analysis){
