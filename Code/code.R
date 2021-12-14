@@ -5,7 +5,7 @@ library(parallel)
 library(parallelDist) ## function parDist(X) calculates distances between rows of matrix X
 library(pdist) ## for function pdist(X, Y), calculates distances between rows of matrices X and Y
 library(readxl)
-# library(pcaMethods)
+library(pcaMethods)
 library(sparr) # for function bivariate.density() in KDE()
 
 
@@ -426,7 +426,7 @@ if(do.kde.analysis){
   census_data = bci
   
   consistent_cluster_data = readRDS('~/SpatialNiche/Data/20211022/bci_clustering_analysis_consistent.rds')
-    
+  
   data = 
     census_data %>% 
     select(sp, census, gx, gy) %>%
@@ -460,7 +460,7 @@ if(do.kde.analysis){
     ) %>%
     mutate(fdp = fdp) %>%
     mutate(soiltype = factor(soiltype, levels = c(4, 2, 3, 1, 5)))
-      
+  
 }
 
 ## Definition of theta := P(recruit | match) / P(recruit | !match)
@@ -905,7 +905,7 @@ if(do.nutrient.analysis){
       }else{
         which(parms$census == 7 & parms$d_cutoff == 20) 
       } 
-      
+    
     soiltype_v_nutrients = 
       indices %>%
       future_map_dfr(
@@ -1112,7 +1112,7 @@ if(do.cfa.analysis){
       )
     ) |>
     filter(
-      census == 8,
+      census == 7,
       d_cutoff == 20
     ) |>
     select(
@@ -1201,93 +1201,112 @@ if(do.cfa.analysis){
       )
     )
   
-  x = psych::fa.parallel(data |> select(Al:water)) # suggests 4 components
+  psych::fa.parallel(data |> select(Al:water)) # suggests 4 components
   
   pc_soil = 
     data |>
     select(Al:water) |>
     pcaMethods::pca(nPcs = 4, scale = 'uv', center = TRUE)
   
-  pc_soil@loadings |> 
-    as_tibble() |> 
-    mutate(feature = rownames(pc_soil@loadings)) |> 
-    ggplot(aes(abs(PC1), abs(PC2), label = feature)) + 
-    geom_text()
-    
-  
-  # pc_loadings =
-  #   pc@loadings |>
-  #   as_tibble() |>
-  #   mutate(nutrient = rownames(pc@loadings)) |>
-  #   pivot_longer(-nutrient, names_to = 'component')
+  loadings = pc_soil@loadings
+  R2 = pc_soil@R2
+  weighted_loadings = abs(loadings) %*% diag(sqrt(R2))
 
-  # pc_loadings|>
-  #   ggplot(aes(nutrient, abs(value), fill = nutrient)) +
-  #   geom_col() +
-  #   facet_wrap(~component) +
-  #   theme(legend.position = 'none')
-  #
-  # pc_loadings|>
-  #   ggplot(aes(component, abs(value), fill = component)) +
-  #   geom_col() +
-  #   facet_wrap(~nutrient) +
-  #   theme(legend.position = 'none')
+  set.seed(0)
+  groups = 
+    weighted_loadings |>
+    kmeans(centers = 4, nstart = 1e2)
   
+  df_groups = 
+    tibble(
+      feature = names(groups$cluster),
+      group = factor(groups$cluster)
+    ) |>
+    arrange(group)
+  
+  plot_loadings = 
+    weighted_loadings |> 
+    as_tibble() |>
+    mutate(feature = rownames(pc_soil@loadings)) |> 
+    left_join(df_groups, by = 'feature') |> 
+    ggplot(aes(V1, V2, label = feature, color = group)) + 
+    geom_text() +
+    theme(legend.position = 'none') +
+    coord_cartesian(xlim = c(0, .3), ylim = c(0, .3))
+  
+  pairwise_components =  
+    weighted_loadings |> 
+    as_tibble() |>
+    mutate(feature = rownames(pc_soil@loadings)) |> 
+    left_join(df_groups, by = 'feature') |>
+    pivot_longer(V1:V4, names_to = 'axis')
+  
+  plot_components = 
+    pairwise_components |>
+    full_join(pairwise_components, by = c('feature', 'group')) |>
+    filter(axis.y > axis.x) |>
+    ggplot(aes(value.x, value.y, label = feature, color = group)) +
+    geom_text() +
+    facet_grid(axis.y ~ axis.x) +
+    theme(legend.position = 'none')
+  
+  
+ 
   models = 
     list(
-       
-        '
+      
+      '
           g1 + g2 + g3 + g4 ~ nutrients + water + P + Al + pH
         ',
-        
-        '
+      
+      '
           nutrients + P ~ g1 + g2 + g3 + g4 + water + pH
         ',
       
-        '
+      '
           nutrients + P ~ g1 + g2 + g3 + g4
         ',
-        
-        
-        
-        '
+      
+      
+      
+      '
           g1 + g2 + g3 + g4 ~ cations + water + pH
         ',
-        
-        '
+      
+      '
           cations ~ g1 + g2 + g3 + g4 + water + pH
         ',
-        
-        '
+      
+      '
           cations ~ g1 + g2 + g3 + g4
         ',
-        
-        
-        
-        '
+      
+      
+      
+      '
           g1 + g2 + g3 + g4 ~ chemistry + water
         ',
-        
-        '
+      
+      '
           chemistry ~ g1 + g2 + g3 + g4 + water
         ',
-        
-        '
+      
+      '
           chemistry ~ g1 + g2 + g3 + g4
         ',
-        
-        
-        '
+      
+      
+      '
           correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
           g1 + g2 + g3 + g4 ~ correlated_nutrients + Al + P + pH + water
         ',
-
-        '
+      
+      '
           correlated_nutrients =~ B + Ca + Cu + Fe + K + Mg + Mn + Zn + N + `N(min)`
           correlated_nutrients + P ~ g1 + g2 + g3 + g4 + pH + water
         ',
-        
-        '
+      
+      '
           LV1 =~ B + Ca + Cu + Fe + K + Mg + Mn + `N(min)` + Zn
           LV2 =~ P + N + elevation
           LV3 =~ water + Al
@@ -1295,21 +1314,46 @@ if(do.cfa.analysis){
           
           g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
         ',
-        
-        '
+      
+      '
           LV1 =~ B + Ca + Cu + K + Mg + `N(min)` + Zn
           LV2 =~ Fe + Mn + pH
           LV3 =~ P + water + Al
           LV4 =~ N
           
           g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        ',
+      
+      '
+          LV1 =~ Cu + Fe + Mn + `N(min)` + pH
+          LV2 =~ Al + water
+          LV3 =~ P + N
+          LV4 =~ B + Ca + K + Mg + Zn
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
         '
-       
+      
     )
   
   names(models) = paste0('model', 1:length(models))
   
   fit = lapply(models, cfa, data = data)
+  
+  while(!fit[[14]]@Fit@converged){
+    fit[[14]] = 
+      cfa(
+        model = 
+          '
+          LV1 =~ Cu + Fe + Mn + `N(min)` + pH
+          LV2 =~ Al + water
+          LV3 =~ P + N
+          LV4 =~ B + Ca + K + Mg + Zn
+          
+          g1 + g2 + g3 + g4 ~ LV1 + LV2 + LV3 + LV4
+        ',
+        data = data
+      )
+  }
   
   measures = sapply(fit, fitMeasures)
   measures = 
@@ -1329,18 +1373,18 @@ if(do.cfa.analysis){
   
   coefs =
     # matrix(coef(fit[[10]])[1:20], 4, ) |>
-    matrix(coef(fit[[10]])[11:30], 4, ) |>
+    matrix(coef(fit[[14]])[11:26], 4, ) |>
     as_tibble() |>
     mutate(group = paste0('g', 1:4)) |>
-    rename(nutrients = V1, water = V2, P = V3, Al = V4, pH = V5) |>
+    # rename(nutrients = V1, water = V2, P = V3, Al = V4, pH = V5) |>
     select(group, everything())
-
+  
   plot_pairwise =
     coefs |>
     ggpairs(columns = 2:ncol(coefs)) +
     geom_hline(yintercept = 0, color = 'gray') +
     geom_vline(xintercept = 0, color = 'gray')
-
+  
   plot_normality = 
     data |> 
     pivot_longer(-c(x,y), names_to = 'index') |> 
@@ -1381,6 +1425,35 @@ if(do.cfa.analysis){
     ggplot(aes(x, y, fill = group)) + 
     geom_tile() + 
     theme(aspect.ratio = .5)
+  
+  mod1 =
+    psem(
+    lm(g1 ~ Al + B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + pH + water, data),
+    lm(g2 ~ Al + B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + pH + water, data),
+    lm(g3 ~ Al + B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + pH + water, data),
+    lm(g4 ~ Al + B + Ca + Cu + Fe + K + Mg + Mn + P + Zn + N + pH + water, data),
+    K %~~% Ca,
+    Al %~~% water,
+    P %~~% N
+  )
+  
+  mod2 =
+    psem(
+      lm(g1 ~ chemistry + water, data),
+      lm(g2 ~ chemistry + water, data),
+      lm(g3 ~ chemistry + water, data),
+      lm(g4 ~ chemistry + water, data),
+      lm(chemistry ~ water + elevation, data)
+    )
+  
+  mod3 =
+    psem(
+      lm(g1 ~ chemistry , data),
+      lm(g2 ~ chemistry , data),
+      lm(g3 ~ chemistry , data),
+      lm(g4 ~ chemistry , data),
+      lm(chemistry ~ water + elevation, data)
+    )
 }
 
 ## test C5.0 on Gaussian random field
@@ -1915,7 +1988,7 @@ if(do.trait.analysis){
       pval = as.numeric(pairwise.wilcox.test(pc1, group_ID)$p.value),
       .groups = 'drop'
     )
-
+  
   
   
 }  
@@ -2142,7 +2215,7 @@ if(do.paper.figures){
         fig2b,
         labels = 'AUTO'
       )
-      
+    
   }
   
   if(do.fig3){
@@ -2234,7 +2307,7 @@ if(do.paper.figures){
       )
     
     fig3 = cowplot::plot_grid(fig3a, fig3b, labels = 'AUTO')
-      
+    
   }
   
   if(do.fig4){
@@ -2425,7 +2498,7 @@ if(do.paper.figures){
         green = "#1DA462",
         blue = "#4C8BF5",
         yellow = "#FFCD46")
-      
+    
     sfig_soiltypes = 
       kde_full %>%
       filter(d_cutoff >= 20) %>%
@@ -2446,10 +2519,10 @@ if(do.paper.figures){
         legend.position = 'none'
       ) +
       labs(x = 'x coordinate (m)', y = 'y coordinate (m)') #+
-      # scale_fill_manual(
-      #   breaks = c(1, 4, 2, 5, 3), 
-      #   values = as.character(plotting_colors5)
-      # )
+    # scale_fill_manual(
+    #   breaks = c(1, 4, 2, 5, 3), 
+    #   values = as.character(plotting_colors5)
+    # )
     
     ## correlation between group density and nutrient concentration per census x d_cutoff
     groupnames = c('red', 'purple', 'green', 'blue', 'yellow')
@@ -2488,7 +2561,7 @@ if(do.paper.figures){
       ) %>%
       mutate(group = groupnames[group]) %>%
       mutate(group = factor(group, levels = groupnames))
-      
+    
     
     sfig_bars = 
       dtf_sfig %>% 
@@ -2626,9 +2699,9 @@ if(do.paper.figures){
         .groups = 'drop'
       )
     
-     sfig_modularity_effect_size = 
+    sfig_modularity_effect_size = 
       all_censuses %>% 
-       filter(d_cutoff >= 20) %>%
+      filter(d_cutoff >= 20) %>%
       mutate(z = (modularity - null$mu) / null$sigma) %>% 
       ggplot(aes(factor(d_cutoff), z)) + 
       geom_boxplot(fill = 'plum4') +
@@ -2636,16 +2709,16 @@ if(do.paper.figures){
         x = 'distance cutoff (m)', 
         y = 'modularity effect size'
       ) +
-       theme(aspect.ratio = 1)
-     
-     value = 
-       all_censuses %>% 
-       mutate(z = (modularity - null$mu) / null$sigma) %>% 
-       filter(census == 7, d_cutoff == 20) %>%
-       select(algorithm, weighted, census, d_cutoff, modularity, z) %>%
-       unique()
+      theme(aspect.ratio = 1)
     
-
+    value = 
+      all_censuses %>% 
+      mutate(z = (modularity - null$mu) / null$sigma) %>% 
+      filter(census == 7, d_cutoff == 20) %>%
+      select(algorithm, weighted, census, d_cutoff, modularity, z) %>%
+      unique()
+    
+    
   }
   
   fignames = 
