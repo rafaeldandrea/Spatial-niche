@@ -25,6 +25,7 @@ do.nutrient.analysis = 0
 do.trait.analysis = 0
 do.paper.figures = 0
 do.network.analysis = 0
+do.nutrient.profiles = 0
 
 
 do.data = 1
@@ -1180,7 +1181,7 @@ if(do.cfa.analysis){
       )
     ) %>%
     filter(
-      census == 7,
+      census == 8,
       d_cutoff == 20
     ) %>%
     select(
@@ -1317,6 +1318,13 @@ if(do.cfa.analysis){
     geom_text() +
     facet_grid(axis.y ~ axis.x) +
     theme(legend.position = 'none')
+  
+  pc1_nutrients_except_P_N_Al =
+    nutrients %>%
+    select(B, Ca, Cu, Fe, K, Mg, Mn, `N(min)`, Zn) %>%
+    pcaMethods::pca(nPcs = 1, scale = 'uv', center = TRUE)
+  
+  data$pc1 = pc1_nutrients_except_P_N_Al@scores[, 1]
 
 
   #####################################################################
@@ -1547,6 +1555,129 @@ if(do.cfa.analysis){
     summarize(Al=median(Al*density),P=median(P*density))%>%ungroup%>%
     ggplot(aes(x=Al,y=P,color=group))+geom_point()
 
+}
+
+if(do.kde.AlP.analysis){
+  
+  plants =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/20211205/20211205_kde_full.rds?raw=true'
+      )
+    ) %>%
+    filter(
+      census == 8,
+      d_cutoff == 20
+    ) %>%
+    select(
+      x, y, group, density
+    ) %>%
+    pivot_wider(names_from = group, values_from = density)
+  
+  names(plants) = c('x', 'y', 'g1', 'g2', 'g3', 'g4')
+  
+  water =
+    read.table(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/raw/main/Data/BCI_SWP_map_mid_dry_season_regular.txt'
+      ),
+      header = TRUE
+    ) %>%
+    as_tibble() %>%
+    mutate(
+      x = seq(10, 990, 20)[cut(x, breaks = seq(0, 1000, 20), labels = FALSE)],
+      y = seq(10, 490, 20)[cut(y, breaks = seq(0, 500, 20), labels = FALSE)]
+    ) %>%
+    replace_na(list(x = 10, y = 10)) %>%
+    group_by(x, y) %>%
+    summarize(water = mean(swp), .groups = 'drop')
+  
+  nutrients =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_nutrient_data.rds?raw=true'
+      )
+    ) |>
+    mutate(
+      across(
+        Al:pH, 
+        function(x) scale(x)[, 1]
+      )
+    )
+  
+  data = 
+    plants |>
+    inner_join(nutrients) |>
+    inner_join(water)
+  
+  data_simplified =
+    data |>
+    pivot_longer(g1:g4, names_to = 'group', values_to = 'density') |>
+    group_by(x, y) |>
+    slice_max(density) |>
+    ungroup() |>
+    select(-density)
+  
+  data_simplified |>
+    ggplot(aes(water, P)) +
+    geom_point() +
+    facet_wrap(~group)
+  
+  BD = 
+    function(plantgroup, h0 = .3){
+      if(plantgroup %in% unique(data_simplified$group)){
+        foo = with(
+          data_simplified |> 
+            filter(group == plantgroup), 
+          ppp(Al, P, xrange = range(Al), yrange = range(P))
+        )  
+      } else{
+        foo = with(
+          data_simplified,
+          ppp(Al, P, xrange = range(Al), yrange = range(P))
+        )
+      }
+      
+      bar = as.numeric(bivariate.density(foo, h0 = h0)$z$v)
+      
+      return(bar)
+    }
+  
+  Al_min = min(data$Al)
+  Al_max = max(data$Al)
+  P_min = min(data$P)
+  P_max = max(data$P)
+  
+  res = 
+    expand_grid(
+      Al = seq(Al_min, Al_max, length = 128),
+      P = seq(P_min, P_max, length = 128)
+    ) |>
+    arrange(Al, P) |>
+    bind_cols(
+      tibble(
+        g0 = BD('all'),
+        g1 = BD('g1'),
+        g2 = BD('g2'),
+        g3 = BD('g3'),
+        g4 = BD('g4')
+      )
+    )
+  
+  res |>
+    filter(g0 > 0.01) |>
+    select(-g0) |>
+    pivot_longer(g1:g4, names_to = 'group') |>
+    group_by(group) |>
+    mutate(value = scale(value), .groups = 'drop') |>
+    ggplot() +
+    geom_raster(aes(Al, P, fill = value)) +
+    geom_point(aes(Al, P), data = data_simplified) +
+    facet_wrap(~group) +
+    scale_fill_gradientn(colors = terrain.colors(2000)) +
+    theme(aspect.ratio = 1) +
+    labs(fill = 'scaled\ndensity')
+  
 }
 
 ## test C5.0 on Gaussian random field
