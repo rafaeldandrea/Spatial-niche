@@ -1104,6 +1104,7 @@ if(do.cfa.analysis){
   
   library(lavaan)
   library(GGally)
+  library(piecewiseSEM)
   
   plants = 
     readRDS(
@@ -1112,7 +1113,7 @@ if(do.cfa.analysis){
       )
     ) |>
     filter(
-      census == 7,
+      census == 8,
       d_cutoff == 20
     ) |>
     select(
