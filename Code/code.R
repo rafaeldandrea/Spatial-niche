@@ -485,6 +485,51 @@ if(do.kde.analysis){
 
 }
 
+if(do.nutrient.profiles){
+  
+  ## The point here is to show that BCI is mesic with respect to 
+  ## the soil nutrients measured. All soil features on BCI show a healthy range,
+  ## spanning the range across all 8 tropical plots for which we have soil data.
+  ## This suggests that niche differentiation by soil conditions in the tropics, 
+  ## if it occurs, is likely present on BCI. 
+  
+  fdp = c('bci', 'hkk', 'kch', 'kor', 'lap', 'pas', 'sin', 'yas')
+  
+  dat = NULL
+  for(plot in fdp){
+    address =
+      paste0(
+        'https://github.com/rafaeldandrea/Spatial-niche/raw/main/Data/resoilnutrientdatarequest/',
+        plot,
+        '_20x20_soil.csv'
+      )
+    
+    dat = 
+      dat |> 
+      bind_rows(
+        read.csv(url(address)) |>
+          as_tibble() |>
+          mutate(fdp = plot)
+      )
+  }
+  
+  soil_dat = 
+    dat |>
+    pivot_longer(-c(x, y, fdp), names_to = 'feature') |>
+    group_by(fdp, feature) |>
+    summarize(
+      concentration = (value - min(value)) / (max(value) - min(value)),
+      .groups = 'drop'
+    )
+  
+  plot_soil_histograms = 
+    soil_dat |>
+    ggplot(aes(concentration)) +
+    geom_histogram() +
+    facet_grid(fdp~feature) +
+    theme(aspect.ratio = 1)
+}
+
 ## Definition of theta := P(recruit | match) / P(recruit | !match)
 if(do.recruitment.analysis){
 
