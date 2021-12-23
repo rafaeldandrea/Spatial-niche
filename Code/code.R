@@ -8,6 +8,8 @@ library(readxl)
 library(pcaMethods)
 library(sparr) # for function bivariate.density() in KDE()
 
+# load printing colors: list 'colors' with elements red green blue yellow
+load(url('https://github.com/rafaeldandrea/Spatial-niche/blob/main/Code/colors.rdata?raw=true'))
 
 theme_set(theme_bw())
 theme_update(
@@ -28,6 +30,7 @@ do.trait.analysis = 0
 do.paper.figures = 0
 do.network.analysis = 0
 do.nutrient.profiles = 0
+do.kmeans.analysis = 0
 
 
 do.data = 1
@@ -1887,14 +1890,84 @@ if(do.pca.analysis){
     nutrients |> 
     inner_join(water) |>
     select(Al:water) |> 
-    pcaMethods::pca(nPcs = 2, scale = 'uv', center = TRUE)
-
+    pcaMethods::pca(nPcs = 4, scale = 'uv', center = TRUE)
   
   df_scores = 
     pca@scores |> 
     as_tibble() |> 
     bind_cols(data_simplified) |>
-    mutate(PC1 = -PC1, PC2 = -PC2)
+    mutate(PC1 = -PC1, PC2 = -PC2) 
+  
+  if(do.kmeans.analysis){
+    k = 
+      future_pmap_dfr(
+        expand_grid(
+          groups = 2:10, 
+          seed = 0:100
+        ),
+        function(groups, seed){
+          foo = 
+            df_scores |> 
+            select(Al:water)
+          if(seed > 0){
+            set.seed(seed)
+            foo = apply(foo, 2, sample)
+          }
+          wss = 
+            kmeans(
+              foo, 
+              centers = groups, 
+              nstart = 100
+            )$tot.withinss
+          return(tibble(groups = groups, seed = seed, wss = wss))
+        } 
+      )
+    
+    k4 = 
+      kmeans(
+        df_scores |> 
+          select(Al:water),
+        centers = 4,
+        nstart = 100
+      )
+    
+    df_scores = 
+      df_scores |>
+      mutate(kmeans = k4$cluster)
+    
+    plot_mapping = 
+      df_scores |> 
+      count(group, kmeans) |>
+      ggplot(aes(kmeans, n)) +
+      geom_col() +
+      facet_wrap(~group) +
+      labs(
+        x = 'soil group',
+        y = 'quadrat count'
+      ) +
+      theme(aspect.ratio = 1)
+    
+    plot_gap = 
+      k |> 
+      filter(seed == 0) |> 
+      inner_join(
+        k |> 
+          filter(seed > 0) |> 
+          group_by(groups) |> 
+          summarize(
+            null = mean(wss), 
+            .groups = 'drop')
+      ) |> 
+      mutate(gap = null - wss) |>
+      ggplot(aes(groups, gap)) +
+      geom_line() + 
+      geom_point() +
+      xlab('number of groups') +
+      theme(aspect.ratio = 1)
+
+    grid.arrange(plot_gap, plot_mapping, ncol = 2)
+    
+  }
   
   df_loadings = 
     pca@loadings |> 
@@ -1914,7 +1987,7 @@ if(do.pca.analysis){
         yend = 10*PC2
       ), 
       data = df_loadings, 
-      arrow = arrow(length = unit(.5, "cm"))
+      arrow = arrow(length = unit(.25, "cm"))
     ) +
     geom_text(
       aes(10 * PC1, 10 * PC2, label = feature), 
@@ -1930,6 +2003,129 @@ if(do.pca.analysis){
       y = 'PC2'
     ) +
     theme(legend.position = c(.85, .85))
+  
+  plot_group = function(gr){
+    plot = 
+      df_scores |>
+      ggplot() + 
+      geom_point(
+        aes(PC1, PC2), 
+        data = df_scores |> filter(group != gr),
+        color = 'grey',
+        alpha = .3
+      ) + 
+      geom_point(
+        aes(PC1, PC2), 
+        data = df_scores |> filter(group == gr),
+        color = 'blue'
+      ) +
+      theme(aspect.ratio = 1) +
+      geom_hline(yintercept = 0, color = 'gray') +
+      geom_vline(xintercept = 0, color = 'gray') +
+      labs(
+        x = 'PC1',
+        y = 'PC2'
+      ) +
+      coord_cartesian(
+        xlim = range(c(10 * df_loadings$PC1, df_scores$PC1)), 
+        ylim = range(c(10 * df_loadings$PC2, df_scores$PC2))
+      )
+    
+    return(plot)
+  }
+  
+  p1 = plot_group('g1')
+  p2 = plot_group('g2')
+  p3 = plot_group('g3')
+  p4 = plot_group('g4')
+  
+  plot_grid(plot, plot_grid(p1, p2, p3, p4), axis = 'tb')  
+  
+  s2d = 
+    plot(
+      df_scores[,1:2], 
+      pch = 20, 
+      col = (1:4)[match(df_scores$group, c('g1', 'g2', 'g3', 'g4'))]
+    )
+  s3d = 
+    scatterplot3d(
+      df_scores[,1:3], 
+      pch = 20, 
+      color = (1:4)[match(df_scores$group, c('g1', 'g2', 'g3', 'g4'))]
+    )
+  
+  plot_loadings_angle = 
+    df_loadings |>
+    mutate(angle = 360 / (2 * pi) * atan(PC2/ PC1)) |>
+    mutate(feature = factor(feature, levels = feature[order(angle)])) |>
+    ggplot(aes(feature, angle, label = feature)) +
+    geom_text() +
+    theme(legend.position = 'none')
+  
+  scatterplot3d(
+    df_scores$`N(min)`, 
+    df_scores$P, 
+    df_scores$Fe, 
+    pch = 20,
+    c(2, 3, 4, 6)[match(df_scores$group, c('g1', 'x', 'x','g4'))]
+  )
+  
+  data |> 
+    pivot_longer(g1:g4, names_to = 'group', values_to = 'density') |> 
+    pivot_longer(Al:water, names_to = 'feature') |> 
+    group_by(feature, group) |> 
+    summarize(
+      cor = cor(density, value), 
+      .groups = 'drop'
+    ) |> 
+    ggplot(aes(feature, cor)) + 
+    facet_wrap(~group) + 
+    geom_col()
+  
+  # feature groups
+  # group 1: B K Ca Zn Mg N(min) Cu
+  # group 2: Mn Fe pH N
+  # group 3: Al water P
+  
+  p14 = 
+    df_scores |> 
+    filter(group %in% c('g1', 'g4')) |> 
+    ggplot(aes(N, Fe, color = group)) + 
+    geom_point() +
+    ggtitle('G1 vs G4') +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    scale_color_manual(values = c(colors$red, colors$yellow))
+  
+  p13 = 
+    df_scores |> 
+    filter(group %in% c('g1', 'g3')) |> 
+    ggplot(aes(PC1, Al, color = group)) + 
+    geom_point() +
+    ggtitle('G1 vs G3') +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray')
+  
+  p12 = 
+    df_scores |> 
+    filter(group %in% c('g1', 'g2')) |> 
+    ggplot(aes(N, P, color = group)) + 
+    geom_point() +
+    ggtitle('G1 vs G2') +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray')
+  
+  p24 = 
+    df_scores |> 
+    filter(group %in% c('g2', 'g4')) |> 
+    ggplot(aes(N, P, color = group)) + 
+    geom_point() +
+    ggtitle('G2 vs G4') +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray')
+  
+  plot_grid(p12, p13, p14, p24)
+    
 }
 
 ## test C5.0 on Gaussian random field
