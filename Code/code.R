@@ -1885,6 +1885,20 @@ if(do.pca.analysis){
     ungroup() |>
     select(-density)
   
+  plot_BCI = 
+    df_scores |> 
+    ggplot(aes(x, y, fill = group))+
+    geom_tile()+
+    theme(aspect.ratio = .5) +
+    scale_fill_manual(
+      values = 
+        c(
+          colors$red, 
+          colors$green, 
+          colors$blue, 
+          colors$yellow)
+      )
+  
   set.seed(0)
   pca = 
     nutrients |> 
@@ -1975,7 +1989,7 @@ if(do.pca.analysis){
     bind_cols(tibble(feature = rownames(pca@loadings))) |>
     mutate(PC1 = -PC1, PC2 = -PC2)
   
-  plot = 
+  plot_PCA = 
     ggplot() + 
     geom_point(aes(PC1, PC2, color = group), data = df_scores) + 
     theme(aspect.ratio = 1) +
@@ -1994,7 +2008,7 @@ if(do.pca.analysis){
       data = df_loadings, 
       nudge_x = .5 * df_loadings$PC1,
       nudge_y = .5 * df_loadings$PC2,
-      color = 'red'
+      color = 'darkgreen'
     ) +
     geom_hline(yintercept = 0, color = 'gray') +
     geom_vline(xintercept = 0, color = 'gray') +
@@ -2002,7 +2016,15 @@ if(do.pca.analysis){
       x = 'PC1',
       y = 'PC2'
     ) +
-    theme(legend.position = c(.85, .85))
+    theme(legend.position = c(.85, .85)) +
+    scale_color_manual(
+      values = 
+        c(
+          colors$red, 
+          colors$green, 
+          colors$blue, 
+          colors$yellow)
+    )
   
   plot_group = function(gr){
     plot = 
@@ -2086,6 +2108,25 @@ if(do.pca.analysis){
   # group 1: B K Ca Zn Mg N(min) Cu
   # group 2: Mn Fe pH N
   # group 3: Al water P
+  
+  p124 = 
+    df_scores |> 
+    filter(group != 'g3') |> 
+    ggplot(aes(pH, P, color = group)) + 
+    geom_point() +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    scale_color_manual(values = c(colors$red, colors$green, colors$yellow)) +
+    theme(aspect.ratio = 1)
+  
+  pAl = 
+    df_scores |> 
+   ggplot(aes(pH, Al, color = group)) + 
+    geom_point() +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    scale_color_manual(values = c(colors$red, colors$green, colors$blue, colors$yellow)) +
+    theme(aspect.ratio = 1)
   
   p14 = 
     df_scores |> 
