@@ -19,8 +19,8 @@ theme_update(
 do.clustering.analysis = 0
 do.kde.analysis = 0
 do.cfa.analysis = 0
-do.kde.AlP.analysis = 1
-do.pca.analysis = 0
+do.kde.AlP.analysis = 0
+do.pca.analysis = 1
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
