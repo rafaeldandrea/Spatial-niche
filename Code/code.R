@@ -18,7 +18,9 @@ theme_update(
 
 do.clustering.analysis = 0
 do.kde.analysis = 0
-do.cfa.analysis = 1
+do.cfa.analysis = 0
+do.kde.AlP.analysis = 1
+do.pca.analysis = 0
 do.C5.analysis = 0
 do.recruitment.analysis = 0
 do.nutrient.analysis = 0
@@ -1275,7 +1277,7 @@ if(do.cfa.analysis){
   pc_soil =
     data %>%
     select(Al:water) %>%
-    pcaMethods::pca(nPcs = 4, scale = 'uv', center = TRUE)
+    pcaMethods::pca(nPcs = 14, scale = 'uv', center = TRUE)
 
   loadings = pc_soil@loadings
   R2 = pc_soil@R2
@@ -1559,6 +1561,12 @@ if(do.cfa.analysis){
 
 if(do.kde.AlP.analysis){
   
+  ## The story here is that our plant groups segregate in the 3-d space 
+  ## whose axes are correlated nutrients + Al + P. Group 3 is associated
+  ## with high nutrient concentration, while the other 3 groups are associated
+  ## with low nutrient concentration. Groups 2 and 3 distinguish themselves
+  ## on the P vs Al plane. Unclear how Group 1 differs from 2 and 3.
+  
   plants =
     readRDS(
       url(
@@ -1619,21 +1627,21 @@ if(do.kde.AlP.analysis){
     select(-density)
   
   data_simplified |>
-    ggplot(aes(water, P)) +
+    ggplot(aes(Al, P)) +
     geom_point() +
     facet_wrap(~group)
   
   BD = 
-    function(plantgroup, h0 = .3){
+    function(plantgroup, h0 = .3, data = data_simplified){
       if(plantgroup %in% unique(data_simplified$group)){
         foo = with(
-          data_simplified |> 
+          data |> 
             filter(group == plantgroup), 
           ppp(Al, P, xrange = range(Al), yrange = range(P))
         )  
       } else{
         foo = with(
-          data_simplified,
+          data,
           ppp(Al, P, xrange = range(Al), yrange = range(P))
         )
       }
@@ -1664,7 +1672,8 @@ if(do.kde.AlP.analysis){
       )
     )
   
-  res |>
+  plot_densities = 
+    res |>
     filter(g0 > 0.01) |>
     select(-g0) |>
     pivot_longer(g1:g4, names_to = 'group') |>
@@ -1678,6 +1687,249 @@ if(do.kde.AlP.analysis){
     theme(aspect.ratio = 1) +
     labs(fill = 'scaled\ndensity')
   
+  set.seed(0)
+  pca = 
+    nutrients |> 
+    inner_join(water) |>
+    select(Al:water) |> 
+    pcaMethods::pca(nPcs = 2, scale = 'uv', center = TRUE)
+  
+  
+  df_scores = 
+    pca@scores |> 
+    as_tibble() |> 
+    bind_cols(data_simplified) |>
+    mutate(PC1 = -PC1, PC2 = -PC2)
+  
+  df_loadings = 
+    pca@loadings |> 
+    as_tibble() |> 
+    bind_cols(tibble(feature = rownames(pca@loadings))) |>
+    mutate(PC1 = -PC1, PC2 = -PC2)
+  
+  plot = 
+    ggplot() + 
+    geom_point(aes(PC1, PC2, color = group), data = df_scores) + 
+    theme(aspect.ratio = 1) +
+    geom_segment(
+      aes(
+        x = rep(0, nrow(df_loadings)), 
+        y = rep(0, nrow(df_loadings)), 
+        xend = 10*PC1, 
+        yend = 10*PC2
+      ), 
+      data = df_loadings, 
+      arrow = arrow(length = unit(.5, "cm"))
+    ) +
+    geom_text(
+      aes(10 * PC1, 10 * PC2, label = feature), 
+      data = df_loadings, 
+      nudge_x = .5 * df_loadings$PC1,
+      nudge_y = .5 * df_loadings$PC2,
+      color = 'red'
+    ) +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    labs(
+      x = 'PC1',
+      y = 'PC2'
+    ) +
+    theme(legend.position = c(.85, .85))
+  
+  BD_PC = 
+    function(plantgroup, h0 = .3, data = df_scores){
+      if(plantgroup %in% unique(data_simplified$group)){
+        foo = with(
+          data |> 
+            filter(group == plantgroup), 
+          ppp(PC1, PC2, xrange = range(PC1), yrange = range(PC2))
+        )  
+      } else{
+        foo = with(
+          data,
+          ppp(PC1, PC2, xrange = range(PC1), yrange = range(PC2))
+        )
+      }
+      
+      bar = 
+        as.numeric(
+          bivariate.density(
+            foo, 
+            h0 = h0, 
+            xy = 
+              list(
+                x = seq(min(df_scores$PC1), max(df_scores$PC1), length = 128),
+                y = seq(min(df_scores$PC2), max(df_scores$PC2), length = 128)
+              ))$z$v
+          )
+      
+      return(bar)
+    }
+  
+  res = 
+    expand_grid(
+      PC1 = seq(min(df_scores$PC1), max(df_scores$PC1), length = 128),
+      PC2 = seq(min(df_scores$PC2), max(df_scores$PC2), length = 128)
+    ) |>
+    arrange(PC1, PC2) |>
+    bind_cols(
+      tibble(
+        g0 = BD_PC('all'),
+        g1 = BD_PC('g1'),
+        g2 = BD_PC('g2'),
+        g3 = BD_PC('g3'),
+        g4 = BD_PC('g4')
+      )
+    ) |>
+    replace_na(list(g1 = 0, g2 = 0, g3 = 0, g4 = 0)) |>
+    mutate(across(g1:g4, function(x) (x - min(x)) / (max(x) - min(x))))
+  
+  
+  plot_densities = 
+    res |>
+    filter(g0 > 1e-6) |>
+    select(-g0) |>
+    pivot_longer(g1:g4, names_to = 'group') |>
+    ggplot() +
+    geom_tile(aes(PC1, PC2, fill = value)) +
+    geom_point(aes(PC1, PC2), data = df_scores, alpha = .2) +
+    facet_wrap(~group) +
+    scale_fill_gradientn(colors = terrain.colors(2000)) +
+    theme(aspect.ratio = 1) +
+    labs(fill = 'scaled\ndensity') +
+    geom_segment(
+      aes(
+        x = rep(0, nrow(df_loadings)), 
+        y = rep(0, nrow(df_loadings)), 
+        xend = 10*PC1, 
+        yend = 10*PC2
+      ), 
+      data = df_loadings, 
+      arrow = arrow(length = unit(.5, "cm"))
+    ) +
+    geom_text(
+      aes(10 * PC1, 10 * PC2, label = feature), 
+      data = df_loadings, 
+      nudge_x = .5 * df_loadings$PC1,
+      nudge_y = .5 * df_loadings$PC2,
+      color = 'red'
+    ) +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    labs(
+      x = 'PC1',
+      y = 'PC2'
+    ) 
+}
+
+if(do.pca.analysis){
+  plants =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/20211205/20211205_kde_full.rds?raw=true'
+      )
+    ) %>%
+    filter(
+      census == 8,
+      d_cutoff == 20
+    ) %>%
+    select(
+      x, y, group, density
+    ) %>%
+    pivot_wider(names_from = group, values_from = density)
+  
+  names(plants) = c('x', 'y', 'g1', 'g2', 'g3', 'g4')
+  
+  water =
+    read.table(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/raw/main/Data/BCI_SWP_map_mid_dry_season_regular.txt'
+      ),
+      header = TRUE
+    ) %>%
+    as_tibble() %>%
+    mutate(
+      x = seq(10, 990, 20)[cut(x, breaks = seq(0, 1000, 20), labels = FALSE)],
+      y = seq(10, 490, 20)[cut(y, breaks = seq(0, 500, 20), labels = FALSE)]
+    ) %>%
+    replace_na(list(x = 10, y = 10)) %>%
+    group_by(x, y) %>%
+    summarize(water = mean(swp), .groups = 'drop')
+  
+  nutrients =
+    readRDS(
+      url(
+        'https://github.com/rafaeldandrea/Spatial-niche/blob/main/Data/Manuscript-Data/bci_nutrient_data.rds?raw=true'
+      )
+    ) |>
+    mutate(
+      across(
+        Al:pH, 
+        function(x) scale(x)[, 1]
+      )
+    )
+  
+  data = 
+    plants |>
+    inner_join(nutrients) |>
+    inner_join(water)
+  
+  data_simplified =
+    data |>
+    pivot_longer(g1:g4, names_to = 'group', values_to = 'density') |>
+    group_by(x, y) |>
+    slice_max(density) |>
+    ungroup() |>
+    select(-density)
+  
+  set.seed(0)
+  pca = 
+    nutrients |> 
+    inner_join(water) |>
+    select(Al:water) |> 
+    pcaMethods::pca(nPcs = 2, scale = 'uv', center = TRUE)
+
+  
+  df_scores = 
+    pca@scores |> 
+    as_tibble() |> 
+    bind_cols(data_simplified) |>
+    mutate(PC1 = -PC1, PC2 = -PC2)
+  
+  df_loadings = 
+    pca@loadings |> 
+    as_tibble() |> 
+    bind_cols(tibble(feature = rownames(pca@loadings))) |>
+    mutate(PC1 = -PC1, PC2 = -PC2)
+  
+  plot = 
+    ggplot() + 
+    geom_point(aes(PC1, PC2, color = group), data = df_scores) + 
+    theme(aspect.ratio = 1) +
+    geom_segment(
+      aes(
+        x = rep(0, nrow(df_loadings)), 
+        y = rep(0, nrow(df_loadings)), 
+        xend = 10*PC1, 
+        yend = 10*PC2
+      ), 
+      data = df_loadings, 
+      arrow = arrow(length = unit(.5, "cm"))
+    ) +
+    geom_text(
+      aes(10 * PC1, 10 * PC2, label = feature), 
+      data = df_loadings, 
+      nudge_x = .5 * df_loadings$PC1,
+      nudge_y = .5 * df_loadings$PC2,
+      color = 'red'
+    ) +
+    geom_hline(yintercept = 0, color = 'gray') +
+    geom_vline(xintercept = 0, color = 'gray') +
+    labs(
+      x = 'PC1',
+      y = 'PC2'
+    ) +
+    theme(legend.position = c(.85, .85))
 }
 
 ## test C5.0 on Gaussian random field
